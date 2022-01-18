@@ -19,9 +19,11 @@
 package v1alpha3
 
 import (
+	"kubesphere.io/devops/pkg/client/git"
+	"kubesphere.io/devops/pkg/kapis/devops/v1alpha3/scm"
 	"net/http"
 
-	"github.com/emicklei/go-restful"
+	restful "github.com/emicklei/go-restful"
 	restfulspec "github.com/emicklei/go-restful-openapi"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -43,23 +45,33 @@ import (
 var GroupVersion = schema.GroupVersion{Group: api.GroupName, Version: "v1alpha3"}
 
 // AddToContainer adds web service into container.
-func AddToContainer(container *restful.Container, devopsClient devopsClient.Interface, k8sClient k8s.Client, client client.Client) {
+func AddToContainer(container *restful.Container, devopsClient devopsClient.Interface,
+	k8sClient k8s.Client, client client.Client) (wss []*restful.WebService) {
 	ws := runtime.NewWebService(GroupVersion)
-	registerRoutes(devopsClient, k8sClient, ws)
+	wss = append(wss, ws)
+	registerRoutes(devopsClient, k8sClient, client, ws)
 	pipelinerun.RegisterRoutes(ws, client)
 	pipeline.RegisterRoutes(ws, client)
 	container.Add(ws)
 
 	ws = runtime.NewWebServiceWithoutGroup(GroupVersion)
-	registerRoutes(devopsClient, k8sClient, ws)
+	wss = append(wss, ws)
+	registerRoutes(devopsClient, k8sClient, client, ws)
 	pipelinerun.RegisterRoutes(ws, client)
 	pipeline.RegisterRoutes(ws, client)
 	container.Add(ws)
+	return
 }
 
-func registerRoutes(devopsClient devopsClient.Interface, k8sClient k8s.Client, ws *restful.WebService) {
+func registerRoutes(devopsClient devopsClient.Interface, k8sClient k8s.Client, client client.Client, ws *restful.WebService) {
 	handler := newDevOpsHandler(devopsClient, k8sClient)
-	// credential
+	registerRoutersForCredentials(handler, ws)
+	registerRoutersForPipelines(handler, ws)
+	registerRoutersForWorkspace(handler, ws)
+	registerRoutersForSCM(client, ws)
+}
+
+func registerRoutersForCredentials(handler *devopsHandler, ws *restful.WebService) {
 	ws.Route(ws.GET("/devops/{devops}/credentials").
 		To(handler.ListCredential).
 		Param(ws.PathParameter("devops", "devops name")).
@@ -102,8 +114,9 @@ func registerRoutes(devopsClient devopsClient.Interface, k8sClient k8s.Client, w
 		Doc("delete the credential of the specified devops for the current user").
 		Returns(http.StatusOK, api.StatusOK, []v1.Secret{}).
 		Metadata(restfulspec.KeyOpenAPITags, []string{constants.DevOpsPipelineTag}))
+}
 
-	// pipeline
+func registerRoutersForPipelines(handler *devopsHandler, ws *restful.WebService) {
 	ws.Route(ws.GET("/devops/{devops}/pipelines").
 		To(handler.ListPipeline).
 		Param(ws.PathParameter("devops", "devops name")).
@@ -146,8 +159,9 @@ func registerRoutes(devopsClient devopsClient.Interface, k8sClient k8s.Client, w
 		Doc("delete the pipeline of the specified devops for the current user").
 		Returns(http.StatusOK, api.StatusOK, []v1alpha3.Pipeline{}).
 		Metadata(restfulspec.KeyOpenAPITags, []string{constants.DevOpsPipelineTag}))
+}
 
-	// devops
+func registerRoutersForWorkspace(handler *devopsHandler, ws *restful.WebService) {
 	ws.Route(ws.GET("/workspaces/{workspace}/devops").
 		To(handler.ListDevOpsProject).
 		Param(ws.PathParameter("workspace", "workspace name")).
@@ -169,8 +183,9 @@ func registerRoutes(devopsClient devopsClient.Interface, k8sClient k8s.Client, w
 		To(handler.GetDevOpsProject).
 		Param(ws.PathParameter("workspace", "workspace name")).
 		Param(ws.PathParameter("devops", "project name")).
-		Doc("Get the devopsproject of the specified workspace for the current user").
-		Returns(http.StatusOK, api.StatusOK, []v1alpha3.DevOpsProject{}).
+		Param(ws.QueryParameter("generateName", "use '{devops}` as a generatName if 'generateName=true', or as a regular name")).
+		Doc("Get the devops project of the specified workspace for the current user").
+		Returns(http.StatusOK, api.StatusOK, v1alpha3.DevOpsProject{}).
 		Metadata(restfulspec.KeyOpenAPITags, []string{constants.DevOpsProjectTag}))
 
 	ws.Route(ws.PUT("/workspaces/{workspace}/devops/{devops}").
@@ -188,4 +203,16 @@ func registerRoutes(devopsClient devopsClient.Interface, k8sClient k8s.Client, w
 		Doc("Get the devopsproject of the specified workspace for the current user").
 		Returns(http.StatusOK, api.StatusOK, []v1alpha3.DevOpsProject{}).
 		Metadata(restfulspec.KeyOpenAPITags, []string{constants.DevOpsProjectTag}))
+}
+
+func registerRoutersForSCM(k8sClient client.Client, ws *restful.WebService) {
+	handler := scm.NewHandler(k8sClient)
+
+	ws.Route(ws.POST("/scms/{scm}/verify").
+		To(handler.Verify).
+		Param(ws.PathParameter("scm", "the SCM type")).
+		Param(ws.QueryParameter("secret", "the secret name")).
+		Param(ws.QueryParameter("secretNamespace", "the namespace of target secret")).
+		Doc("Verify the token of different git providers").
+		Returns(http.StatusOK, api.StatusOK, git.VerifyResponse{}))
 }

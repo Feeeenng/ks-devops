@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -30,16 +29,20 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog"
 	"kubesphere.io/devops/pkg/api/devops/v1alpha3"
 	devopsClient "kubesphere.io/devops/pkg/client/devops"
+	"kubesphere.io/devops/pkg/jwt/token"
 	"kubesphere.io/devops/pkg/utils/sliceutil"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// tokenExpireIn indicates that the temporary token issued by controller will be expired in some time.
+const tokenExpireIn time.Duration = 5 * time.Minute
 
 // Reconciler reconciles a PipelineRun object
 type Reconciler struct {
@@ -48,6 +51,7 @@ type Reconciler struct {
 	Scheme       *runtime.Scheme
 	DevOpsClient devopsClient.Interface
 	JenkinsCore  core.JenkinsCore
+	TokenIssuer  token.Issuer
 	recorder     record.EventRecorder
 }
 
@@ -64,7 +68,6 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	pipelineRun := &v1alpha3.PipelineRun{}
 	var err error
 	if err = r.Client.Get(ctx, req.NamespacedName, pipelineRun); err != nil {
-		log.Error(err, "unable to fetch PipelineRun")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -113,9 +116,6 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		pipelineRunCopied.Labels = make(map[string]string)
 	}
 	pipelineRunCopied.Labels[v1alpha3.PipelineNameLabelKey] = pipelineName
-	if refName, err := getSCMRefName(&pipelineRunCopied.Spec); err == nil && refName != "" {
-		pipelineRunCopied.Labels[v1alpha3.SCMRefNameLabelKey] = refName
-	}
 
 	log = log.WithValues("namespace", namespaceName, "Pipeline", pipelineName)
 
@@ -135,7 +135,7 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 			// See also: https://book-v1.book.kubebuilder.io/basics/status_subresource.html
 			if err := r.updateStatus(ctx, status, req.NamespacedName); err != nil {
 				log.Error(err, "unable to update PipelineRun status.")
-				return ctrl.Result{RequeueAfter: time.Second}, err
+				return ctrl.Result{}, err
 			}
 		}
 
@@ -163,7 +163,7 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		// update labels and annotations
 		if err := r.updateLabelsAndAnnotations(ctx, pipelineRunCopied); err != nil {
 			log.Error(err, "unable to update PipelineRun labels and annotations.")
-			return ctrl.Result{RequeueAfter: time.Second}, err
+			return ctrl.Result{}, err
 		}
 
 		r.recorder.Eventf(pipelineRunCopied, corev1.EventTypeNormal, v1alpha3.Updated, "Updated running data for PipelineRun %s", req.NamespacedName)
@@ -172,11 +172,19 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 	}
 
+	// get or create JenkinsCore if the PipelineRun has creator annotation
+	jenkinsCore, err := r.getOrCreateJenkinsCore(pipelineRunCopied.GetAnnotations())
+	if err != nil {
+		r.recorder.Eventf(pipelineRunCopied, corev1.EventTypeWarning, v1alpha3.TriggerFailed, "Failed to trigger PipelineRun %s, and error was %v", req.NamespacedName, err)
+		return ctrl.Result{}, err
+	}
+	// create trigger handler
+	triggerHandler := &jenkinsHandler{jenkinsCore}
 	// first run
-	jobRun, err := jHandler.triggerJenkinsJob(namespaceName, pipelineName, &pipelineRunCopied.Spec)
+	jobRun, err := triggerHandler.triggerJenkinsJob(namespaceName, pipelineName, &pipelineRunCopied.Spec)
 	if err != nil {
 		log.Error(err, "unable to run pipeline", "namespace", namespaceName, "pipeline", pipeline.Name)
-		r.recorder.Eventf(pipelineRunCopied, corev1.EventTypeWarning, v1alpha3.TriggerFailed, "Failed to trigger PipelineRun %s, and error was %s", req.NamespacedName, err)
+		r.recorder.Eventf(pipelineRunCopied, corev1.EventTypeWarning, v1alpha3.TriggerFailed, "Failed to trigger PipelineRun %s, and error was %v", req.NamespacedName, err)
 		return ctrl.Result{}, err
 	}
 	// check if there is still a same PipelineRun
@@ -217,7 +225,7 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	}
 	r.recorder.Eventf(pipelineRunCopied, corev1.EventTypeNormal, v1alpha3.Started, "Started PipelineRun %s", req.NamespacedName)
 	// requeue after 1 second
-	return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+	return ctrl.Result{}, nil
 }
 
 func (r *Reconciler) hasSamePipelineRun(jobRun *job.PipelineRun, pipeline *v1alpha3.Pipeline) (exists bool, err error) {
@@ -229,7 +237,7 @@ func (r *Reconciler) hasSamePipelineRun(jobRun *job.PipelineRun, pipeline *v1alp
 	}
 	if pipeline.Spec.Type == v1alpha3.MultiBranchPipelineType {
 		// add SCM reference name into list options for multi-branch Pipeline
-		listOptions = append(listOptions, client.MatchingLabels{v1alpha3.SCMRefNameLabelKey: jobRun.Pipeline})
+		listOptions = append(listOptions, client.MatchingFields{v1alpha3.PipelineRunSCMRefNameField: jobRun.Pipeline})
 	}
 	if err = r.Client.List(context.Background(), pipelineRuns, listOptions...); err == nil {
 		isMultiBranch := pipeline.Spec.Type == v1alpha3.MultiBranchPipelineType
@@ -244,9 +252,6 @@ func getSCMRefName(prSpec *v1alpha3.PipelineRunSpec) (string, error) {
 	if prSpec.IsMultiBranchPipeline() {
 		if prSpec.SCM == nil || prSpec.SCM.RefName == "" {
 			return "", fmt.Errorf("failed to obtain SCM reference name for multi-branch Pipeline")
-		}
-		if errs := validation.IsValidLabelValue(prSpec.SCM.RefName); len(errs) != 0 {
-			return "", fmt.Errorf(strings.Join(errs, "; "))
 		}
 		branch = prSpec.SCM.RefName
 	}
@@ -307,6 +312,24 @@ func (r *Reconciler) makePipelineRunOrphan(ctx context.Context, pr *v1alpha3.Pip
 	prToUpdate.Status.AddCondition(&condition)
 	prToUpdate.Status.Phase = v1alpha3.Unknown
 	return r.updateStatus(ctx, &pr.Status, client.ObjectKey{Namespace: pr.Namespace, Name: pr.Name})
+}
+
+func (r *Reconciler) getOrCreateJenkinsCore(annotations map[string]string) (*core.JenkinsCore, error) {
+	creator, ok := annotations[v1alpha3.PipelineRunCreatorAnnoKey]
+	if !ok || creator == "" {
+		return &r.JenkinsCore, nil
+	}
+	// create a new JenkinsCore for current creator
+	accessToken, err := r.TokenIssuer.IssueTo(&user.DefaultInfo{Name: creator}, token.AccessToken, tokenExpireIn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to issue access token for creator %s, error was %v", creator, err)
+	}
+	jenkinsCore := &core.JenkinsCore{
+		URL:      r.JenkinsCore.URL,
+		UserName: creator,
+		Token:    accessToken,
+	}
+	return jenkinsCore, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

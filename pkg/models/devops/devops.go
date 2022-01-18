@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"kubesphere.io/devops/pkg/constants"
 	"net/http"
 	"strings"
 	"sync"
@@ -37,6 +38,7 @@ import (
 
 	"kubesphere.io/devops/pkg/api/devops/v1alpha3"
 	devopsv1alpha3 "kubesphere.io/devops/pkg/api/devops/v1alpha3"
+	"kubesphere.io/devops/pkg/utils/secretutil"
 
 	"kubesphere.io/devops/pkg/api"
 	"kubesphere.io/devops/pkg/apiserver/query"
@@ -52,6 +54,7 @@ const (
 type DevopsOperator interface {
 	CreateDevOpsProject(workspace string, project *v1alpha3.DevOpsProject) (*v1alpha3.DevOpsProject, error)
 	GetDevOpsProject(workspace string, projectName string) (*v1alpha3.DevOpsProject, error)
+	GetDevOpsProjectByGenerateName(workspace string, projectName string) (*v1alpha3.DevOpsProject, error)
 	DeleteDevOpsProject(workspace string, projectName string) error
 	UpdateDevOpsProject(workspace string, project *v1alpha3.DevOpsProject) (*v1alpha3.DevOpsProject, error)
 	ListDevOpsProject(workspace string, limit, offset int) (api.ListResult, error)
@@ -115,7 +118,7 @@ type DevopsOperator interface {
 	CheckCron(projectName string, req *http.Request) (*devops.CheckCronRes, error)
 
 	ToJenkinsfile(req *http.Request) (*devops.ResJenkinsfile, error)
-	ToJson(req *http.Request) (map[string]interface{}, error)
+	ToJSON(req *http.Request) (map[string]interface{}, error)
 }
 
 type devopsOperator struct {
@@ -168,17 +171,49 @@ func (d devopsOperator) CreateDevOpsProject(workspace string, project *v1alpha3.
 		klog.Error(err)
 		return nil, err
 	}
+
 	// metadata override
 	if project.Labels == nil {
 		project.Labels = make(map[string]string)
 	}
 	project.Name = ""
-	//project.Labels[tenantv1alpha1.WorkspaceLabel] = workspace
+	project.Labels[constants.WorkspaceLabelKey] = workspace
+
+	// set annotations
+	if project.Annotations == nil {
+		project.Annotations = make(map[string]string)
+	}
 	project.Annotations[devopsv1alpha3.DevOpeProjectSyncStatusAnnoKey] = StatusPending
 	project.Annotations[devopsv1alpha3.DevOpeProjectSyncTimeAnnoKey] = GetSyncNowTime()
+
+	// create it
 	return d.ksclient.DevopsV1alpha3().DevOpsProjects().Create(d.context, project, metav1.CreateOptions{})
 }
 
+// GetDevOpsProjectByGenerateName finds the DevOps project by workspace and project name
+// the projectName is the generateName instead of the real resource name
+func (d devopsOperator) GetDevOpsProjectByGenerateName(workspace string, projectName string) (project *v1alpha3.DevOpsProject, err error) {
+	var list *v1alpha3.DevOpsProjectList
+
+	if list, err = d.ksclient.DevopsV1alpha3().DevOpsProjects().List(d.context, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("%s=%s", constants.WorkspaceLabelKey, workspace),
+	}); err == nil {
+		for i := range list.Items {
+			item := list.Items[i]
+			if item.GenerateName == projectName {
+				project = &item
+				break
+			}
+		}
+
+		if project == nil {
+			err = fmt.Errorf("not found DevOpsProject by workspace: %s and projectName: %s", workspace, projectName)
+		}
+	}
+	return
+}
+
+// GetDevOpsProject finds the DevOps project by workspace and project name
 func (d devopsOperator) GetDevOpsProject(workspace string, projectName string) (*v1alpha3.DevOpsProject, error) {
 	return d.ksclient.DevopsV1alpha3().DevOpsProjects().Get(d.context, projectName, metav1.GetOptions{})
 }
@@ -292,7 +327,11 @@ func (d devopsOperator) CreateCredentialObj(projectName string, secret *v1.Secre
 	secret.Annotations[devopsv1alpha3.CredentialAutoSyncAnnoKey] = "true"
 	secret.Annotations[devopsv1alpha3.CredentialSyncStatusAnnoKey] = StatusPending
 	secret.Annotations[devopsv1alpha3.CredentialSyncTimeAnnoKey] = GetSyncNowTime()
-	return d.k8sclient.CoreV1().Secrets(projectObj.Status.AdminNamespace).Create(d.context, secret, metav1.CreateOptions{})
+	if secret, err := d.k8sclient.CoreV1().Secrets(projectObj.Status.AdminNamespace).Create(d.context, secret, metav1.CreateOptions{}); err != nil {
+		return nil, err
+	} else {
+		return secretutil.MaskCredential(secret), nil
+	}
 }
 
 func (d devopsOperator) GetCredentialObj(projectName string, secretName string) (*v1.Secret, error) {
@@ -300,7 +339,13 @@ func (d devopsOperator) GetCredentialObj(projectName string, secretName string) 
 	if err != nil {
 		return nil, err
 	}
-	return d.k8sclient.CoreV1().Secrets(projectObj.Status.AdminNamespace).Get(d.context, secretName, metav1.GetOptions{})
+	if secret, err := d.k8sclient.CoreV1().Secrets(projectObj.Status.AdminNamespace).Get(d.context, secretName, metav1.GetOptions{}); err != nil {
+		return nil, err
+	} else {
+		// TODO Mask the secret if there is no place to use plain secret.
+		// return secretutil.MaskCredential(secret), nil
+		return secret, nil
+	}
 }
 
 func (d devopsOperator) DeleteCredentialObj(projectName string, secret string) error {
@@ -319,7 +364,11 @@ func (d devopsOperator) UpdateCredentialObj(projectName string, secret *v1.Secre
 	secret.Annotations[devopsv1alpha3.CredentialAutoSyncAnnoKey] = "true"
 	secret.Annotations[devopsv1alpha3.CredentialSyncStatusAnnoKey] = StatusPending
 	secret.Annotations[devopsv1alpha3.CredentialSyncTimeAnnoKey] = GetSyncNowTime()
-	return d.k8sclient.CoreV1().Secrets(projectObj.Status.AdminNamespace).Update(d.context, secret, metav1.UpdateOptions{})
+	if secret, err := d.k8sclient.CoreV1().Secrets(projectObj.Status.AdminNamespace).Update(d.context, secret, metav1.UpdateOptions{}); err != nil {
+		return nil, err
+	} else {
+		return secretutil.MaskCredential(secret), nil
+	}
 }
 
 func (d devopsOperator) ListCredentialObj(projectName string, query *query.Query) (api.ListResult, error) {
@@ -335,18 +384,12 @@ func (d devopsOperator) ListCredentialObj(projectName string, query *query.Query
 	}
 	var result []runtime.Object
 
-	credentialTypeList := []v1.SecretType{
-		v1alpha3.SecretTypeBasicAuth,
-		v1alpha3.SecretTypeSSHAuth,
-		v1alpha3.SecretTypeSecretText,
-		v1alpha3.SecretTypeKubeConfig,
-	}
-	for i, _ := range credentialObjList.Items {
+	credentialTypeList := v1alpha3.GetSupportedCredentialTypes()
+	for i := range credentialObjList.Items {
 		credential := credentialObjList.Items[i]
-
 		for _, credentialType := range credentialTypeList {
 			if credential.Type == credentialType {
-				result = append(result, &credential)
+				result = append(result, secretutil.MaskCredential(&credential))
 			}
 		}
 	}
@@ -903,9 +946,9 @@ func (d devopsOperator) ToJenkinsfile(req *http.Request) (*devops.ResJenkinsfile
 	return res, err
 }
 
-func (d devopsOperator) ToJson(req *http.Request) (map[string]interface{}, error) {
+func (d devopsOperator) ToJSON(req *http.Request) (map[string]interface{}, error) {
 
-	res, err := d.devopsClient.ToJson(convertToHttpParameters(req))
+	res, err := d.devopsClient.ToJSON(convertToHttpParameters(req))
 	if err != nil {
 		klog.Error(err)
 		return nil, err
@@ -921,7 +964,7 @@ func (d devopsOperator) isGenerateNameUnique(workspace, generateName string) (bo
 		return false, err
 	}
 	for _, p := range projects.Items {
-		if p.GenerateName == generateName {
+		if p.Labels != nil && p.Labels[constants.WorkspaceLabelKey] == workspace && p.GenerateName == generateName {
 			return false, err
 		}
 	}

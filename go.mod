@@ -9,19 +9,23 @@ require (
 	github.com/aws/aws-sdk-go v1.38.52
 	github.com/beevik/etree v1.1.0
 	github.com/davecgh/go-spew v1.1.1
+	github.com/drone/go-scm v1.16.2
 	github.com/emicklei/go-restful v2.9.6+incompatible
 	github.com/emicklei/go-restful-openapi v1.4.1
+	github.com/emicklei/go-restful-swagger12 v0.0.0-20201014110547-68ccff494617
 	github.com/fatih/structs v1.1.0
 	github.com/form3tech-oss/jwt-go v3.2.2+incompatible
 	github.com/go-logr/logr v0.3.0
 	github.com/go-logr/zapr v0.2.0 // indirect
 	github.com/go-openapi/spec v0.19.3
 	github.com/go-redis/redis v6.15.9+incompatible
+	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/example v0.0.0-20170904185048-46695d81d1fa
 	github.com/golang/mock v1.6.0
 	github.com/google/go-cmp v0.5.5
 	github.com/google/go-querystring v1.1.0 // indirect
-	github.com/jenkins-zh/jenkins-client v0.0.5
+	github.com/h2non/gock v1.0.9
+	github.com/jenkins-zh/jenkins-client v0.0.8
 	github.com/kubesphere/sonargo v0.0.2
 	github.com/onsi/ginkgo v1.16.4
 	github.com/onsi/gomega v1.15.0

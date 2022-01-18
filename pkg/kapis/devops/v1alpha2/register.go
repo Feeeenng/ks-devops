@@ -49,20 +49,22 @@ var GroupVersion = schema.GroupVersion{Group: api.GroupName, Version: "v1alpha2"
 
 func AddToContainer(container *restful.Container, ksInformers externalversions.SharedInformerFactory,
 	devopsClient devops.Interface, sonarqubeClient sonarqube.SonarInterface, ksClient versioned.Interface,
-	s3Client s3.Interface, endpoint string, k8sClient k8s.Client, jenkinsClient core.JenkinsCore) error {
+	s3Client s3.Interface, endpoint string, k8sClient k8s.Client, jenkinsClient core.JenkinsCore) (wss []*restful.WebService, err error) {
 	wsWithGroup := runtime.NewWebService(GroupVersion)
+	wss = append(wss, wsWithGroup)
 	// the API endpoint with group version will be removed in the future release
-	if err := addToContainerWithWebService(container, ksInformers, devopsClient, sonarqubeClient, ksClient,
+	if err = addToContainerWithWebService(container, ksInformers, devopsClient, sonarqubeClient, ksClient,
 		s3Client, endpoint, k8sClient, jenkinsClient, wsWithGroup); err != nil {
-		return err
+		return
 	}
 
 	ws := runtime.NewWebServiceWithoutGroup(GroupVersion)
-	if err := addToContainerWithWebService(container, ksInformers, devopsClient, sonarqubeClient, ksClient,
+	wss = append(wss, ws)
+	if err = addToContainerWithWebService(container, ksInformers, devopsClient, sonarqubeClient, ksClient,
 		s3Client, endpoint, k8sClient, jenkinsClient, ws); err != nil {
-		return err
+		return
 	}
-	return nil
+	return
 }
 
 func addToContainerWithWebService(container *restful.Container, ksInformers externalversions.SharedInformerFactory,
@@ -641,7 +643,7 @@ func AddPipelineToWebService(webservice *restful.WebService, devopsClient devops
 		 * https://github.com/jenkinsci/pipeline-model-definition-plugin/blob/fc8d22192d7d3a17badc3b8af7191a84bb7fd4ca/EXTENDING.md#conversion-to-json-representation-from-jenkinsfile
 		 */
 		webservice.Route(webservice.POST("/tojson").
-			To(projectPipelineHandler.ToJson).
+			To(projectPipelineHandler.ToJSON).
 			Metadata(restfulspec.KeyOpenAPITags, []string{constants.DevOpsJenkinsfileTag}).
 			Consumes("application/x-www-form-urlencoded").
 			Produces("application/json", "charset=utf-8").

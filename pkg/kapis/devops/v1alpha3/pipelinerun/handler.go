@@ -3,6 +3,7 @@ package pipelinerun
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strconv"
 
@@ -12,6 +13,7 @@ import (
 	"kubesphere.io/devops/pkg/api"
 	"kubesphere.io/devops/pkg/api/devops/v1alpha3"
 	"kubesphere.io/devops/pkg/apiserver/query"
+	apiserverrequest "kubesphere.io/devops/pkg/apiserver/request"
 	"kubesphere.io/devops/pkg/client/devops"
 	"kubesphere.io/devops/pkg/models/pipelinerun"
 	resourcesV1alpha3 "kubesphere.io/devops/pkg/models/resources/v1alpha3"
@@ -54,22 +56,27 @@ func (h *apiHandler) listPipelineRuns(request *restful.Request, response *restfu
 	}
 
 	// build label selector
-	labelSelector, err := buildLabelSelector(queryParam, pipeline.Name, branchName)
+	labelSelector, err := buildLabelSelector(queryParam, pipeline.Name)
 	if err != nil {
 		api.HandleError(request, response, err)
 		return
 	}
 
+	opts := make([]client.ListOption, 0, 3)
+	opts = append(opts, client.InNamespace(pipeline.Namespace))
+	opts = append(opts, client.MatchingLabelsSelector{Selector: labelSelector})
+	if branchName != "" {
+		opts = append(opts, client.MatchingFields{v1alpha3.PipelineRunSCMRefNameField: branchName})
+	}
+
 	var prs v1alpha3.PipelineRunList
 	// fetch PipelineRuns
-	if err := h.client.List(context.Background(), &prs,
-		client.InNamespace(pipeline.Namespace),
-		client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
+	if err := h.client.List(context.Background(), &prs, opts...); err != nil {
 		api.HandleError(request, response, err)
 		return
 	}
 
-	var listHandler resourcesV1alpha3.ListHandler
+	var listHandler resourcesV1alpha3.ListHandler = listHandler{}
 	if backward {
 		listHandler = backwardListHandler{}
 	}
@@ -130,8 +137,19 @@ func (h *apiHandler) createPipelineRun(request *restful.Request, response *restf
 		return
 	}
 
+	// get current login user from request context
+	user, ok := apiserverrequest.UserFrom(request.Request.Context())
+	if !ok || user == nil {
+		// should never happen
+		err := fmt.Errorf("unauthenticated user entered to create PipelineRun for Pipeline '%s/%s'", nsName, pipName)
+		api.HandleUnauthorized(response, request, err)
+		return
+	}
 	// create PipelineRun
 	pr := CreatePipelineRun(&pipeline, &payload, scm)
+	if user != nil && user.GetName() != "" {
+		pr.GetAnnotations()[v1alpha3.PipelineRunCreatorAnnoKey] = user.GetName()
+	}
 	if err := h.client.Create(context.Background(), pr); err != nil {
 		api.HandleError(request, response, err)
 		return
