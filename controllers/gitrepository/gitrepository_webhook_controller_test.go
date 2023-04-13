@@ -1,28 +1,48 @@
+/*
+Copyright 2022 The KubeSphere Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package gitrepository
 
 import (
 	"context"
 	"fmt"
-	"github.com/drone/go-scm/scm"
-	"github.com/drone/go-scm/scm/driver/github"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
 	"github.com/go-logr/logr"
-	testing2 "github.com/go-logr/logr/testing"
+	"github.com/h2non/gock"
+	"github.com/jenkins-x/go-scm/scm"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	"kubesphere.io/devops/pkg/api/devops/v1alpha1"
-	"reflect"
+	mgrcore "kubesphere.io/devops/controllers/core"
+	"kubesphere.io/devops/pkg/api/devops/v1alpha3"
+	controllerruntime "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"strings"
-	"testing"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func Test_getRepo(t *testing.T) {
 	type args struct {
-		repo *v1alpha1.GitRepository
+		repo *v1alpha3.GitRepository
 	}
 	tests := []struct {
 		name string
@@ -31,13 +51,13 @@ func Test_getRepo(t *testing.T) {
 	}{{
 		name: "not supported provider",
 		args: args{
-			repo: &v1alpha1.GitRepository{Spec: v1alpha1.GitRepositorySpec{Provider: "fake"}},
+			repo: &v1alpha3.GitRepository{Spec: v1alpha3.GitRepositorySpec{Provider: "fake"}},
 		},
 		want: "",
 	}, {
 		name: "provider is emtpy",
 		args: args{
-			repo: &v1alpha1.GitRepository{Spec: v1alpha1.GitRepositorySpec{
+			repo: &v1alpha3.GitRepository{Spec: v1alpha3.GitRepositorySpec{
 				URL: "https://github.com/linuxsuren/test",
 			}},
 		},
@@ -45,7 +65,7 @@ func Test_getRepo(t *testing.T) {
 	}, {
 		name: "github as the provider",
 		args: args{
-			repo: &v1alpha1.GitRepository{Spec: v1alpha1.GitRepositorySpec{
+			repo: &v1alpha3.GitRepository{Spec: v1alpha3.GitRepositorySpec{
 				Provider: "github",
 				URL:      "https://github.com/linuxsuren/test",
 			}},
@@ -54,7 +74,7 @@ func Test_getRepo(t *testing.T) {
 	}, {
 		name: "gitlab as the provider",
 		args: args{
-			repo: &v1alpha1.GitRepository{Spec: v1alpha1.GitRepositorySpec{
+			repo: &v1alpha3.GitRepository{Spec: v1alpha3.GitRepositorySpec{
 				Provider: "gitlab",
 				URL:      "https://gitlab.com/linuxsuren/test",
 			}},
@@ -127,34 +147,34 @@ func Test_exist(t *testing.T) {
 }
 
 func Test_linkToWebhook(t *testing.T) {
-	schema, err := v1alpha1.SchemeBuilder.Register().Build()
+	schema, err := v1alpha3.SchemeBuilder.Register().Build()
 	assert.Nil(t, err)
 
-	repo := &v1alpha1.GitRepository{
+	repo := &v1alpha3.GitRepository{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "test",
 			Name:      "name",
 		},
 	}
-	webhook := &v1alpha1.Webhook{
+	webhook := &v1alpha3.Webhook{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "test",
 			Name:      "webhook",
 		},
 	}
-	webhookA := &v1alpha1.Webhook{
+	webhookA := &v1alpha3.Webhook{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "test",
 			Name:      "webhook-a",
 			Annotations: map[string]string{
-				v1alpha1.AnnotationKeyGitRepos: "name",
+				v1alpha3.AnnotationKeyGitRepos: "name",
 			},
 		},
 	}
 
 	type args struct {
 		webhook v1.LocalObjectReference
-		repo    *v1alpha1.GitRepository
+		repo    *v1alpha3.GitRepository
 		client  client.Client
 	}
 	tests := []struct {
@@ -166,7 +186,7 @@ func Test_linkToWebhook(t *testing.T) {
 		name: "normal case",
 		args: args{
 			webhook: v1.LocalObjectReference{Name: "webhook"},
-			repo: &v1alpha1.GitRepository{
+			repo: &v1alpha3.GitRepository{
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: "test",
 					Name:      "name",
@@ -175,14 +195,14 @@ func Test_linkToWebhook(t *testing.T) {
 			client: fake.NewFakeClientWithScheme(schema, repo.DeepCopy(), webhook.DeepCopy()),
 		},
 		check: func(client client.Client) bool {
-			webh := &v1alpha1.Webhook{}
+			webh := &v1alpha3.Webhook{}
 			if err := client.Get(context.TODO(), types.NamespacedName{
 				Namespace: "test",
 				Name:      "webhook",
 			}, webh); err != nil {
 				return false
 			}
-			val := webh.Annotations[v1alpha1.AnnotationKeyGitRepos]
+			val := webh.Annotations[v1alpha3.AnnotationKeyGitRepos]
 			return val == "name"
 		},
 		wantErr: false,
@@ -190,7 +210,7 @@ func Test_linkToWebhook(t *testing.T) {
 		name: "not found the desired webhook",
 		args: args{
 			webhook: v1.LocalObjectReference{Name: "not-found"},
-			repo: &v1alpha1.GitRepository{
+			repo: &v1alpha3.GitRepository{
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: "test",
 					Name:      "name",
@@ -199,14 +219,14 @@ func Test_linkToWebhook(t *testing.T) {
 			client: fake.NewFakeClientWithScheme(schema, repo.DeepCopy(), webhook.DeepCopy()),
 		},
 		check: func(client client.Client) bool {
-			webh := &v1alpha1.Webhook{}
+			webh := &v1alpha3.Webhook{}
 			if err := client.Get(context.TODO(), types.NamespacedName{
 				Namespace: "test",
 				Name:      "webhook",
 			}, webh); err != nil {
 				return false
 			}
-			val := webh.Annotations[v1alpha1.AnnotationKeyGitRepos]
+			val := webh.Annotations[v1alpha3.AnnotationKeyGitRepos]
 			return val == "name"
 		},
 		wantErr: true,
@@ -214,7 +234,7 @@ func Test_linkToWebhook(t *testing.T) {
 		name: "has the same repo in the annotations",
 		args: args{
 			webhook: v1.LocalObjectReference{Name: "webhook-a"},
-			repo: &v1alpha1.GitRepository{
+			repo: &v1alpha3.GitRepository{
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: "test",
 					Name:      "name",
@@ -223,14 +243,14 @@ func Test_linkToWebhook(t *testing.T) {
 			client: fake.NewFakeClientWithScheme(schema, repo.DeepCopy(), webhookA.DeepCopy()),
 		},
 		check: func(client client.Client) (result bool) {
-			webh := &v1alpha1.Webhook{}
+			webh := &v1alpha3.Webhook{}
 			if err := client.Get(context.TODO(), types.NamespacedName{
 				Namespace: "test",
 				Name:      "webhook-a",
 			}, webh); err != nil {
 				return false
 			}
-			val := webh.Annotations[v1alpha1.AnnotationKeyGitRepos]
+			val := webh.Annotations[v1alpha3.AnnotationKeyGitRepos]
 			result = val == "name"
 			if !result {
 				fmt.Printf("expect 'name', the actual value is '%s'\n", val)
@@ -304,21 +324,21 @@ func Test_addToSlick(t *testing.T) {
 }
 
 func TestReconciler_linkToWebhooks(t *testing.T) {
-	schema, err := v1alpha1.SchemeBuilder.Register().Build()
+	schema, err := v1alpha3.SchemeBuilder.Register().Build()
 	assert.Nil(t, err)
 
-	repo := v1alpha1.GitRepository{
+	repo := v1alpha3.GitRepository{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "test",
 			Name:      "name",
 		},
-		Spec: v1alpha1.GitRepositorySpec{
+		Spec: v1alpha3.GitRepositorySpec{
 			Webhooks: []v1.LocalObjectReference{{
 				Name: "webhook",
 			}},
 		},
 	}
-	webhook := v1alpha1.Webhook{
+	webhook := v1alpha3.Webhook{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "test",
 			Name:      "webhook",
@@ -327,10 +347,9 @@ func TestReconciler_linkToWebhooks(t *testing.T) {
 
 	type fields struct {
 		Client client.Client
-		log    logr.Logger
 	}
 	type args struct {
-		repo *v1alpha1.GitRepository
+		repo *v1alpha3.GitRepository
 	}
 	tests := []struct {
 		name    string
@@ -342,28 +361,26 @@ func TestReconciler_linkToWebhooks(t *testing.T) {
 		name: "normal case",
 		fields: fields{
 			Client: fake.NewFakeClientWithScheme(schema, repo.DeepCopy(), webhook.DeepCopy()),
-			log:    testing2.NullLogger{},
 		},
 		args: args{
 			repo: &repo,
 		},
 		wantErr: false,
 		check: func(client client.Client) bool {
-			webh := &v1alpha1.Webhook{}
+			webh := &v1alpha3.Webhook{}
 			if err := client.Get(context.TODO(), types.NamespacedName{
 				Namespace: "test",
 				Name:      "webhook",
 			}, webh); err != nil {
 				return false
 			}
-			val := webh.Annotations[v1alpha1.AnnotationKeyGitRepos]
+			val := webh.Annotations[v1alpha3.AnnotationKeyGitRepos]
 			return val == "name"
 		},
 	}, {
 		name: "has errors",
 		fields: fields{
 			Client: fake.NewFakeClientWithScheme(schema, repo.DeepCopy()),
-			log:    testing2.NullLogger{},
 		},
 		args: args{
 			repo: &repo,
@@ -374,7 +391,7 @@ func TestReconciler_linkToWebhooks(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := &Reconciler{
 				Client: tt.fields.Client,
-				log:    tt.fields.log,
+				log:    logr.New(log.NullLogSink{}),
 			}
 			if err := r.linkToWebhooks(tt.args.repo); (err != nil) != tt.wantErr {
 				t.Errorf("linkToWebhooks() error = %v, wantErr %v", err, tt.wantErr)
@@ -388,7 +405,7 @@ func TestReconciler_linkToWebhooks(t *testing.T) {
 }
 
 func TestReconciler_getTokenFromSecret(t *testing.T) {
-	schema, err := v1alpha1.SchemeBuilder.Register().Build()
+	schema, err := v1alpha3.SchemeBuilder.Register().Build()
 	assert.Nil(t, err)
 	err = v1.SchemeBuilder.AddToScheme(schema)
 	assert.Nil(t, err)
@@ -513,7 +530,7 @@ func TestReconciler_getTokenFromSecret(t *testing.T) {
 }
 
 func TestReconciler_getGitClient(t *testing.T) {
-	schema, err := v1alpha1.SchemeBuilder.Register().Build()
+	schema, err := v1alpha3.SchemeBuilder.Register().Build()
 	assert.Nil(t, err)
 	err = v1.SchemeBuilder.AddToScheme(schema)
 	assert.Nil(t, err)
@@ -534,7 +551,7 @@ func TestReconciler_getGitClient(t *testing.T) {
 		recorder record.EventRecorder
 	}
 	type args struct {
-		repo *v1alpha1.GitRepository
+		repo *v1alpha3.GitRepository
 	}
 	tests := []struct {
 		name       string
@@ -545,15 +562,15 @@ func TestReconciler_getGitClient(t *testing.T) {
 	}{{
 		name: "not support git provider",
 		args: args{
-			repo: &v1alpha1.GitRepository{
-				Spec: v1alpha1.GitRepositorySpec{
+			repo: &v1alpha3.GitRepository{
+				Spec: v1alpha3.GitRepositorySpec{
 					Provider: "not-support",
 				},
 			},
 		},
 		wantErr: func(t assert.TestingT, err error, i ...interface{}) bool {
 			assert.NotNil(t, err, i)
-			assert.Equal(t, strings.HasPrefix(err.Error(), "not support git provider: "), true, i)
+			assert.Equal(t, strings.HasPrefix(err.Error(), "Unsupported"), true, i)
 			return true
 		},
 	}, {
@@ -562,9 +579,9 @@ func TestReconciler_getGitClient(t *testing.T) {
 			Client: fake.NewFakeClientWithScheme(schema),
 		},
 		args: args{
-			repo: &v1alpha1.GitRepository{
+			repo: &v1alpha3.GitRepository{
 				ObjectMeta: metav1.ObjectMeta{Namespace: "ns"},
-				Spec: v1alpha1.GitRepositorySpec{
+				Spec: v1alpha3.GitRepositorySpec{
 					Provider: "github",
 					Secret: &v1.SecretReference{
 						Name: "basicSecret",
@@ -576,16 +593,15 @@ func TestReconciler_getGitClient(t *testing.T) {
 			assert.NotNil(t, err, i)
 			return true
 		},
-		wantClient: github.NewDefault(),
 	}, {
 		name: "github provider",
 		fields: fields{
 			Client: fake.NewFakeClientWithScheme(schema, basicSecret.DeepCopy()),
 		},
 		args: args{
-			repo: &v1alpha1.GitRepository{
+			repo: &v1alpha3.GitRepository{
 				ObjectMeta: metav1.ObjectMeta{Namespace: "ns"},
-				Spec: v1alpha1.GitRepositorySpec{
+				Spec: v1alpha3.GitRepositorySpec{
 					Provider: "github",
 					Secret: &v1.SecretReference{
 						Name: "basicSecret",
@@ -603,9 +619,9 @@ func TestReconciler_getGitClient(t *testing.T) {
 			Client: fake.NewFakeClientWithScheme(schema, basicSecret.DeepCopy()),
 		},
 		args: args{
-			repo: &v1alpha1.GitRepository{
+			repo: &v1alpha3.GitRepository{
 				ObjectMeta: metav1.ObjectMeta{Namespace: "ns"},
-				Spec: v1alpha1.GitRepositorySpec{
+				Spec: v1alpha3.GitRepositorySpec{
 					Provider: "gitlab",
 					Secret: &v1.SecretReference{
 						Name: "basicSecret",
@@ -630,6 +646,248 @@ func TestReconciler_getGitClient(t *testing.T) {
 				return
 			}
 			assert.Equalf(t, tt.wantClient, gotClient, "getGitClient(%v)", tt.args.repo)
+		})
+	}
+}
+
+func TestReconciler_SetupWithManager(t *testing.T) {
+	schema, err := v1alpha3.SchemeBuilder.Register().Build()
+	assert.Nil(t, err)
+	err = v1.SchemeBuilder.AddToScheme(schema)
+	assert.Nil(t, err)
+
+	type fields struct {
+		Client   client.Client
+		log      logr.Logger
+		recorder record.EventRecorder
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		wantErr assert.ErrorAssertionFunc
+	}{{
+		name: "normal",
+		wantErr: func(t assert.TestingT, err error, i ...interface{}) bool {
+			assert.Nil(t, err)
+			return true
+		},
+	}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &Reconciler{
+				Client:   tt.fields.Client,
+				log:      tt.fields.log,
+				recorder: tt.fields.recorder,
+			}
+			mgr := &mgrcore.FakeManager{
+				Client: tt.fields.Client,
+				Scheme: schema,
+			}
+			tt.wantErr(t, r.SetupWithManager(mgr), fmt.Sprintf("SetupWithManager(%v)", mgr))
+		})
+	}
+}
+
+func TestReconciler_Reconcile(t *testing.T) {
+	schema, err := v1alpha3.SchemeBuilder.Register().Build()
+	assert.Nil(t, err)
+	err = v1.SchemeBuilder.AddToScheme(schema)
+	assert.Nil(t, err)
+
+	req := controllerruntime.Request{
+		NamespacedName: types.NamespacedName{
+			Namespace: "ns",
+			Name:      "fake",
+		},
+	}
+
+	repo := &v1alpha3.GitRepository{}
+	repo.Namespace = "ns"
+	repo.Name = "fake"
+	repo.Spec.URL = "https://github.com/linuxsuren/test"
+	repo.Spec.Provider = "github"
+
+	repoWithHook := repo.DeepCopy()
+	repoWithHook.Spec.Webhooks = []v1.LocalObjectReference{{
+		Name: "fake",
+	}}
+
+	repoWithSecret := repoWithHook.DeepCopy()
+	repoWithSecret.Spec.Secret = &v1.SecretReference{Name: "fake"}
+
+	invalidGitProvider := repoWithSecret.DeepCopy()
+	invalidGitProvider.Spec.Provider = "invalid"
+
+	repoWithSecretEmptyAddress := repoWithSecret.DeepCopy()
+	repoWithSecretEmptyAddress.Spec.URL = ""
+
+	webhook := &v1alpha3.Webhook{}
+	webhook.Namespace = "ns"
+	webhook.Name = "fake"
+	webhook.Spec.Server = "http://example.com"
+	webhook.Spec.SkipVerify = true
+	webhook.Spec.Events = []string{"push", "pull_request"}
+
+	secret := &v1.Secret{}
+	secret.Namespace = "ns"
+	secret.Name = "fake"
+
+	type fields struct {
+		Client client.Client
+	}
+	type args struct {
+		req controllerruntime.Request
+	}
+	tests := []struct {
+		name       string
+		fields     fields
+		args       args
+		wantResult controllerruntime.Result
+		wantErr    assert.ErrorAssertionFunc
+		prepare    func()
+	}{{
+		name:   "not found git repository",
+		fields: fields{Client: fake.NewFakeClientWithScheme(schema)},
+		args: args{
+			req: req,
+		},
+		wantErr: func(t assert.TestingT, err error, i ...interface{}) bool {
+			assert.Nil(t, err)
+			return true
+		},
+	}, {
+		name:   "no webhooks in git repository",
+		fields: fields{Client: fake.NewFakeClientWithScheme(schema, repo.DeepCopy())},
+		args: args{
+			req: req,
+		},
+		wantErr: func(t assert.TestingT, err error, i ...interface{}) bool {
+			assert.Nil(t, err)
+			return true
+		},
+	}, {
+		name:   "has one correct webhook in git repository, but no secret",
+		fields: fields{Client: fake.NewFakeClientWithScheme(schema, repoWithHook.DeepCopy(), webhook.DeepCopy())},
+		args:   args{req: req},
+		wantErr: func(t assert.TestingT, err error, i ...interface{}) bool {
+			assert.Nil(t, err)
+			return true
+		},
+		wantResult: controllerruntime.Result{Requeue: true, RequeueAfter: time.Minute},
+	}, {
+		name: "repo address is empty",
+		fields: fields{
+			Client: fake.NewFakeClientWithScheme(schema, repoWithSecretEmptyAddress.DeepCopy(), secret.DeepCopy(), webhook.DeepCopy()),
+		},
+		args: args{req: req},
+		wantErr: func(t assert.TestingT, err error, i ...interface{}) bool {
+			assert.NotNil(t, err)
+			return true
+		},
+	}, {
+		name: "invliad git provider",
+		fields: fields{
+			Client: fake.NewFakeClientWithScheme(schema, invalidGitProvider.DeepCopy(), secret.DeepCopy(), webhook.DeepCopy()),
+		},
+		args: args{req: req},
+		wantErr: func(t assert.TestingT, err error, i ...interface{}) bool {
+			assert.NotNil(t, err)
+			return true
+		},
+	}, {
+		name: "failed to list hooks",
+		fields: fields{
+			Client: fake.NewFakeClientWithScheme(schema, repoWithSecret.DeepCopy(), secret.DeepCopy(), webhook.DeepCopy()),
+		},
+		args: args{req: req},
+		prepare: func() {
+			var mockHeaders = map[string]string{
+				"X-GitHub-Request-Id":   "DD0E:6011:12F21A8:1926790:5A2064E2",
+				"X-RateLimit-Limit":     "60",
+				"X-RateLimit-Remaining": "59",
+				"X-RateLimit-Reset":     "1512076018",
+			}
+
+			var mockPageHeaders = map[string]string{
+				"Link": `<https://api.github.com/resource?page=2>; rel="next",` +
+					`<https://api.github.com/resource?page=1>; rel="prev",` +
+					`<https://api.github.com/resource?page=1>; rel="first",` +
+					`<https://api.github.com/resource?page=5>; rel="last"`,
+			}
+
+			gock.New("https://api.github.com").
+				Get("/repos/linuxsuren/test/hooks").
+				MatchParam("page", "1").
+				MatchParam("per_page", "30").
+				Reply(400).
+				Type("application/json").
+				SetHeaders(mockHeaders).
+				SetHeaders(mockPageHeaders).
+				File("testdata/hooks.json")
+		},
+		wantErr: func(t assert.TestingT, err error, i ...interface{}) bool {
+			assert.NotNil(t, err)
+			return true
+		},
+	}, {
+		name: "normal case",
+		fields: fields{
+			Client: fake.NewFakeClientWithScheme(schema, repoWithSecret.DeepCopy(), secret.DeepCopy(), webhook.DeepCopy()),
+		},
+		args: args{req: req},
+		prepare: func() {
+			var mockHeaders = map[string]string{
+				"X-GitHub-Request-Id":   "DD0E:6011:12F21A8:1926790:5A2064E2",
+				"X-RateLimit-Limit":     "60",
+				"X-RateLimit-Remaining": "59",
+				"X-RateLimit-Reset":     "1512076018",
+			}
+
+			var mockPageHeaders = map[string]string{
+				"Link": `<https://api.github.com/resource?page=2>; rel="next",` +
+					`<https://api.github.com/resource?page=1>; rel="prev",` +
+					`<https://api.github.com/resource?page=1>; rel="first",` +
+					`<https://api.github.com/resource?page=5>; rel="last"`,
+			}
+
+			gock.New("https://api.github.com").
+				Get("/repos/linuxsuren/test/hooks").
+				MatchParam("page", "1").
+				MatchParam("per_page", "30").
+				Reply(200).
+				Type("application/json").
+				SetHeaders(mockHeaders).
+				SetHeaders(mockPageHeaders).
+				File("testdata/hooks.json")
+
+			gock.New("https://api.github.com").
+				Post("/repos/linuxsuren/test/hooks").
+				Reply(201).
+				Type("application/json").
+				SetHeaders(mockHeaders).
+				File("testdata/hook.json")
+		},
+		wantErr: func(t assert.TestingT, err error, i ...interface{}) bool {
+			assert.Nil(t, err)
+			return true
+		},
+	}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer gock.Off()
+
+			r := &Reconciler{
+				Client: tt.fields.Client,
+				log:    logr.New(log.NullLogSink{}),
+			}
+			if tt.prepare != nil {
+				tt.prepare()
+			}
+			gotResult, err := r.Reconcile(context.Background(), tt.args.req)
+			if !tt.wantErr(t, err, fmt.Sprintf("Reconcile(%v)", tt.args.req)) {
+				return
+			}
+			assert.Equalf(t, tt.wantResult, gotResult, "Reconcile(%v)", tt.args.req)
 		})
 	}
 }

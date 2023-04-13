@@ -72,7 +72,7 @@ func createPipelineConfigXml(pipeline *devopsv1alpha3.NoScmPipeline) (string, er
 		strategy.CreateElement("artifactNumToKeep").SetText("-1")
 	}
 	if pipeline.Parameters != nil {
-		appendParametersToEtree(properties, pipeline.Parameters)
+		replaceParametersInEtree(properties, pipeline.Parameters)
 	}
 
 	// create trigger xml structure
@@ -111,6 +111,87 @@ func createPipelineConfigXml(pipeline *devopsv1alpha3.NoScmPipeline) (string, er
 	return replaceXmlVersion(stringXml, "1.0", "1.1"), err
 }
 
+func updatePipelineConfigXml(config string, pipeline *devopsv1alpha3.NoScmPipeline) (string, error) {
+	config = replaceXmlVersion(config, "1.1", "1.0")
+	doc := etree.NewDocument()
+	err := doc.ReadFromString(config)
+	if err != nil {
+		return "", err
+	}
+	flow := doc.SelectElement(FlowTag)
+	// ------------------------------------------------
+	// update properties
+	properties := flow.SelectElement(PropertiesTag)
+	if pipeline.DisableConcurrent {
+		addOrUpdateElement(properties, DisableConcurrentJobTag, StringNull)
+	} else {
+		removeChildElement(properties, DisableConcurrentJobTag)
+	}
+
+	if pipeline.Discarder != nil {
+		var discarder, strategy *etree.Element
+		discarder = addOrUpdateElement(properties, BuildDiscarderTag, StringNull)
+		strategy = addOrUpdateElement(discarder, StrategyTag, StringNull)
+
+		replaceAttr(strategy, ClassKey, "hudson.tasks.LogRotator")
+		addOrUpdateElement(strategy, DaysToKeepTag, pipeline.Discarder.DaysToKeep)
+		addOrUpdateElement(strategy, NumToKeepTag, pipeline.Discarder.NumToKeep)
+		addOrUpdateElement(strategy, ArtiDaysToKeepTag, "-1")
+		addOrUpdateElement(strategy, ArtiNumToKeepTag, "-1")
+	}
+
+	if pipeline.Parameters != nil { // overwrite parameters
+		replaceParametersInEtree(properties, pipeline.Parameters)
+	} else {
+		removeChildElement(properties, ParamDefiPropTag)
+	}
+
+	// update triggers xml structure
+	var pipelineTriggerEle, triggersEle *etree.Element
+	pipelineTriggerEle = addOrUpdateElement(properties, PipelineTriggersJobTag, StringNull)
+	triggersEle = addOrUpdateElement(pipelineTriggerEle, TriggersTag, StringNull)
+
+	if pipeline.TimerTrigger != nil {
+		timerTriggerEle := addOrUpdateElement(triggersEle, TimerTriggerTag, StringNull)
+		addOrUpdateElement(timerTriggerEle, "spec", pipeline.TimerTrigger.Cron)
+	} else {
+		removeChildElement(triggersEle, TimerTriggerTag)
+	}
+
+	if pipeline.GenericWebhook != nil {
+		// TODO issue: if support GenericWebhook in console, need to delete GenericWebhook tag when pipeline.GenericWebhook is nil;
+		triggers.CreateGenericWebhookXML(triggersEle, pipeline.GenericWebhook)
+	}
+
+	// ------------------------------------------------
+	// replace definition(all fields could update from console)
+	removeChildElement(flow, DefinitionTag)
+	pipelineDefine := flow.CreateElement(DefinitionTag)
+	pipelineDefine.CreateAttr(ClassKey, "org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition")
+	pipelineDefine.CreateAttr(PluginKey, "workflow-cps")
+	pipelineDefine.CreateElement(ScriptTag).SetText(pipeline.Jenkinsfile)
+	pipelineDefine.CreateElement(SandboxTag).SetText("true")
+
+	// ------------------------------------------------
+	// update others
+	if flow.SelectElement(TriggersTag) == nil {
+		flow.CreateElement(TriggersTag)
+	}
+	// TODO issue: if support RemoteTrigger in console, need to delete GenericWebhook tag when pipeline.GenericWebhook is nil;
+	if pipeline.RemoteTrigger != nil {
+		addOrUpdateElement(flow, AuthTokenTag, pipeline.RemoteTrigger.Token)
+	}
+	addOrUpdateElement(flow, DisabledTag, "false")
+
+	// format xml string
+	doc.Indent(2)
+	stringXml, err := doc.WriteToString()
+	if err != nil {
+		return "", err
+	}
+	return replaceXmlVersion(stringXml, "1.0", "1.1"), err
+}
+
 func parsePipelineConfigXml(config string) (*devopsv1alpha3.NoScmPipeline, error) {
 	pipeline := &devopsv1alpha3.NoScmPipeline{}
 	config = replaceXmlVersion(config, "1.1", "1.0")
@@ -138,8 +219,8 @@ func parsePipelineConfigXml(config string) (*devopsv1alpha3.NoScmPipeline, error
 			SelectElement("jenkins.model.BuildDiscarderProperty").
 			SelectElement("strategy")
 		pipeline.Discarder = &devopsv1alpha3.DiscarderProperty{
-			DaysToKeep: strategy.SelectElement("daysToKeep").Text(),
-			NumToKeep:  strategy.SelectElement("numToKeep").Text(),
+			DaysToKeep: getElementTextValueOrEmpty(strategy, "daysToKeep"),
+			NumToKeep:  getElementTextValueOrEmpty(strategy, "numToKeep"),
 		}
 	}
 
@@ -154,7 +235,7 @@ func parsePipelineConfigXml(config string) (*devopsv1alpha3.NoScmPipeline, error
 		triggersEle := triggerProperty.SelectElement("triggers")
 		if timerTrigger := triggersEle.SelectElement("hudson.triggers.TimerTrigger"); timerTrigger != nil {
 			pipeline.TimerTrigger = &devopsv1alpha3.TimerTrigger{
-				Cron: timerTrigger.SelectElement("spec").Text(),
+				Cron: getElementTextValueOrEmpty(timerTrigger, "spec"),
 			}
 		}
 
@@ -177,13 +258,21 @@ func parsePipelineConfigXml(config string) (*devopsv1alpha3.NoScmPipeline, error
 	return pipeline, nil
 }
 
-func appendParametersToEtree(properties *etree.Element, parameters []devopsv1alpha3.ParameterDefinition) {
-	parameterDefinitions := properties.CreateElement("hudson.model.ParametersDefinitionProperty").
-		CreateElement("parameterDefinitions")
+func replaceParametersInEtree(properties *etree.Element, parameters []devopsv1alpha3.ParameterDefinition) {
+	var paramDefiPropsE, paramDefiE *etree.Element
+	if paramDefiPropsE = properties.SelectElement(ParamDefiPropTag); paramDefiPropsE == nil {
+		paramDefiE = properties.CreateElement(ParamDefiPropTag).CreateElement(ParamDefiTag)
+	} else {
+		if paramDefiE = paramDefiPropsE.SelectElement(ParamDefiTag); paramDefiE != nil {
+			paramDefiPropsE.RemoveChild(paramDefiE)
+		}
+		paramDefiE = paramDefiPropsE.CreateElement(ParamDefiTag)
+	}
+
 	for _, parameter := range parameters {
 		for className, typeName := range ParameterTypeMap {
 			if typeName == parameter.Type {
-				paramDefine := parameterDefinitions.CreateElement(className)
+				paramDefine := paramDefiE.CreateElement(className)
 				paramDefine.CreateElement("name").SetText(parameter.Name)
 				paramDefine.CreateElement("description").SetText(parameter.Description)
 				switch parameter.Type {
@@ -207,6 +296,14 @@ func appendParametersToEtree(properties *etree.Element, parameters []devopsv1alp
 	}
 }
 
+func getElementTextValueOrEmpty(element *etree.Element, name string) string {
+	subEle := element.SelectElement(name)
+	if subEle != nil {
+		return subEle.Text()
+	}
+	return ""
+}
+
 func getParametersfromEtree(properties *etree.Element) []devopsv1alpha3.ParameterDefinition {
 	var parameters []devopsv1alpha3.ParameterDefinition
 	if parametersProperty := properties.SelectElement("hudson.model.ParametersDefinitionProperty"); parametersProperty != nil {
@@ -215,42 +312,42 @@ func getParametersfromEtree(properties *etree.Element) []devopsv1alpha3.Paramete
 			switch param.Tag {
 			case "hudson.model.StringParameterDefinition":
 				parameters = append(parameters, devopsv1alpha3.ParameterDefinition{
-					Name:         param.SelectElement("name").Text(),
-					Description:  param.SelectElement("description").Text(),
-					DefaultValue: param.SelectElement("defaultValue").Text(),
+					Name:         getElementTextValueOrEmpty(param, "name"),
+					Description:  getElementTextValueOrEmpty(param, "description"),
+					DefaultValue: getElementTextValueOrEmpty(param, "defaultValue"),
 					Type:         ParameterTypeMap["hudson.model.StringParameterDefinition"],
 				})
 			case "hudson.model.BooleanParameterDefinition":
 				parameters = append(parameters, devopsv1alpha3.ParameterDefinition{
-					Name:         param.SelectElement("name").Text(),
-					Description:  param.SelectElement("description").Text(),
-					DefaultValue: param.SelectElement("defaultValue").Text(),
+					Name:         getElementTextValueOrEmpty(param, "name"),
+					Description:  getElementTextValueOrEmpty(param, "description"),
+					DefaultValue: getElementTextValueOrEmpty(param, "defaultValue"),
 					Type:         ParameterTypeMap["hudson.model.BooleanParameterDefinition"],
 				})
 			case "hudson.model.TextParameterDefinition":
 				parameters = append(parameters, devopsv1alpha3.ParameterDefinition{
-					Name:         param.SelectElement("name").Text(),
-					Description:  param.SelectElement("description").Text(),
-					DefaultValue: param.SelectElement("defaultValue").Text(),
+					Name:         getElementTextValueOrEmpty(param, "name"),
+					Description:  getElementTextValueOrEmpty(param, "description"),
+					DefaultValue: getElementTextValueOrEmpty(param, "defaultValue"),
 					Type:         ParameterTypeMap["hudson.model.TextParameterDefinition"],
 				})
 			case "hudson.model.FileParameterDefinition":
 				parameters = append(parameters, devopsv1alpha3.ParameterDefinition{
-					Name:        param.SelectElement("name").Text(),
-					Description: param.SelectElement("description").Text(),
+					Name:        getElementTextValueOrEmpty(param, "name"),
+					Description: getElementTextValueOrEmpty(param, "description"),
 					Type:        ParameterTypeMap["hudson.model.FileParameterDefinition"],
 				})
 			case "hudson.model.PasswordParameterDefinition":
 				parameters = append(parameters, devopsv1alpha3.ParameterDefinition{
-					Name:         param.SelectElement("name").Text(),
-					Description:  param.SelectElement("description").Text(),
-					DefaultValue: param.SelectElement("name").Text(),
+					Name:         getElementTextValueOrEmpty(param, "name"),
+					Description:  getElementTextValueOrEmpty(param, "description"),
+					DefaultValue: getElementTextValueOrEmpty(param, "name"),
 					Type:         ParameterTypeMap["hudson.model.PasswordParameterDefinition"],
 				})
 			case "hudson.model.ChoiceParameterDefinition":
 				choiceParameter := devopsv1alpha3.ParameterDefinition{
-					Name:        param.SelectElement("name").Text(),
-					Description: param.SelectElement("description").Text(),
+					Name:        getElementTextValueOrEmpty(param, "name"),
+					Description: getElementTextValueOrEmpty(param, "description"),
 					Type:        ParameterTypeMap["hudson.model.ChoiceParameterDefinition"],
 				}
 				choicesEle := param.SelectElement("choices")
@@ -270,8 +367,8 @@ func getParametersfromEtree(properties *etree.Element) []devopsv1alpha3.Paramete
 				parameters = append(parameters, choiceParameter)
 			default:
 				parameters = append(parameters, devopsv1alpha3.ParameterDefinition{
-					Name:         param.SelectElement("name").Text(),
-					Description:  param.SelectElement("description").Text(),
+					Name:         getElementTextValueOrEmpty(param, "name"),
+					Description:  getElementTextValueOrEmpty(param, "description"),
 					DefaultValue: "unknown",
 					Type:         param.Tag,
 				})
@@ -293,8 +390,8 @@ func getMultiBranchJobTriggerfromEtree(properties *etree.Element) *devopsv1alpha
 	var s devopsv1alpha3.MultiBranchJobTrigger
 	triggerProperty := properties.SelectElement("org.jenkinsci.plugins.workflow.multibranch.PipelineTriggerProperty")
 	if triggerProperty != nil {
-		s.CreateActionJobsToTrigger = triggerProperty.SelectElement("createActionJobsToTrigger").Text()
-		s.DeleteActionJobsToTrigger = triggerProperty.SelectElement("deleteActionJobsToTrigger").Text()
+		s.CreateActionJobsToTrigger = getElementTextValueOrEmpty(triggerProperty, "createActionJobsToTrigger")
+		s.DeleteActionJobsToTrigger = getElementTextValueOrEmpty(triggerProperty, "deleteActionJobsToTrigger")
 	}
 	return &s
 }
@@ -421,19 +518,21 @@ func parseMultiBranchPipelineConfigXml(config string) (*devopsv1alpha3.MultiBran
 			pipeline.MultiBranchJobTrigger = getMultiBranchJobTriggerfromEtree(properties)
 		}
 	}
-	pipeline.Description = project.SelectElement("description").Text()
+	if project.SelectElement("description") != nil {
+		pipeline.Description = getElementTextValueOrEmpty(project, "description")
+	}
 
 	if discarder := project.SelectElement("orphanedItemStrategy"); discarder != nil {
 		pipeline.Discarder = &devopsv1alpha3.DiscarderProperty{
-			DaysToKeep: discarder.SelectElement("daysToKeep").Text(),
-			NumToKeep:  discarder.SelectElement("numToKeep").Text(),
+			DaysToKeep: getElementTextValueOrEmpty(discarder, "daysToKeep"),
+			NumToKeep:  getElementTextValueOrEmpty(discarder, "numToKeep"),
 		}
 	}
 	if triggers := project.SelectElement("triggers"); triggers != nil {
 		if timerTrigger := triggers.SelectElement(
 			"com.cloudbees.hudson.plugins.folder.computed.PeriodicFolderTrigger"); timerTrigger != nil {
 			pipeline.TimerTrigger = &devopsv1alpha3.TimerTrigger{
-				Interval: timerTrigger.SelectElement("interval").Text(),
+				Interval: getElementTextValueOrEmpty(timerTrigger, "interval"),
 			}
 		}
 	}
@@ -499,4 +598,28 @@ func toCrontab(millis int64) string {
 	}
 	return "H H * * *"
 
+}
+
+func addOrUpdateElement(parent *etree.Element, tag, text string) *etree.Element {
+	var e *etree.Element
+	if e = parent.SelectElement(tag); e == nil {
+		e = parent.CreateElement(tag)
+	}
+	if text != "" {
+		e.SetText(text)
+	}
+	return e
+}
+
+func replaceAttr(e *etree.Element, key, value string) *etree.Element {
+	e.RemoveAttr(key)
+	e.CreateAttr(key, value)
+	return e
+}
+
+func removeChildElement(parent *etree.Element, childTag string) *etree.Element {
+	if e := parent.SelectElement(childTag); e != nil {
+		parent.RemoveChild(e)
+	}
+	return parent
 }

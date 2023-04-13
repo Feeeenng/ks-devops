@@ -1,3 +1,19 @@
+/*
+Copyright 2022 The KubeSphere Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package pipelinerun
 
 import (
@@ -55,9 +71,11 @@ func Test_requestSyncPredicate(t *testing.T) {
 		name: "Request to sync while creating",
 		want: func(p predicate.Predicate) {
 			createEvent := event.CreateEvent{
-				Meta: &v1.ObjectMeta{
-					Annotations: map[string]string{
-						v1alpha3.PipelineRequestToSyncRunsAnnoKey: "true",
+				Object: &corev1.ConfigMap{
+					ObjectMeta: v1.ObjectMeta{
+						Annotations: map[string]string{
+							v1alpha3.PipelineRequestToSyncRunsAnnoKey: "true",
+						},
 					},
 				},
 			}
@@ -67,7 +85,7 @@ func Test_requestSyncPredicate(t *testing.T) {
 		name: "Request to nothing while creating",
 		want: func(p predicate.Predicate) {
 			createEvent := event.CreateEvent{
-				Meta: &v1.ObjectMeta{},
+				Object: &corev1.ConfigMap{},
 			}
 			assert.False(t, p.Create(createEvent))
 		},
@@ -75,9 +93,11 @@ func Test_requestSyncPredicate(t *testing.T) {
 		name: "Request to sync while updating",
 		want: func(p predicate.Predicate) {
 			updateEvent := event.UpdateEvent{
-				MetaNew: &v1.ObjectMeta{
-					Annotations: map[string]string{
-						v1alpha3.PipelineRequestToSyncRunsAnnoKey: "true",
+				ObjectNew: &corev1.ConfigMap{
+					ObjectMeta: v1.ObjectMeta{
+						Annotations: map[string]string{
+							v1alpha3.PipelineRequestToSyncRunsAnnoKey: "true",
+						},
 					},
 				},
 			}
@@ -87,7 +107,7 @@ func Test_requestSyncPredicate(t *testing.T) {
 		name: "Request to nothing while updating",
 		want: func(p predicate.Predicate) {
 			updateEvent := event.UpdateEvent{
-				MetaNew: &v1.ObjectMeta{},
+				ObjectNew: &corev1.ConfigMap{},
 			}
 			assert.False(t, p.Update(updateEvent))
 		},
@@ -95,8 +115,10 @@ func Test_requestSyncPredicate(t *testing.T) {
 		name: "Nothing to do while deleting",
 		want: func(p predicate.Predicate) {
 			deleteEvent := event.DeleteEvent{
-				Meta: &v1.ObjectMeta{
-					Annotations: map[string]string{},
+				Object: &corev1.ConfigMap{
+					ObjectMeta: v1.ObjectMeta{
+						Annotations: map[string]string{},
+					},
 				},
 			}
 			assert.False(t, p.Delete(deleteEvent))
@@ -105,9 +127,11 @@ func Test_requestSyncPredicate(t *testing.T) {
 		name: "Nothing to do while genericing",
 		want: func(p predicate.Predicate) {
 			genericEvent := event.GenericEvent{
-				Meta: &v1.ObjectMeta{
-					Annotations: map[string]string{
-						v1alpha3.PipelineRequestToSyncRunsAnnoKey: "true",
+				Object: &corev1.ConfigMap{
+					ObjectMeta: v1.ObjectMeta{
+						Annotations: map[string]string{
+							v1alpha3.PipelineRequestToSyncRunsAnnoKey: "true",
+						},
 					},
 				},
 			}
@@ -414,6 +438,46 @@ func Test_createBarePipelineRunsIfNotPresent(t *testing.T) {
 			if got := createBarePipelineRunsIfNotPresent(newPipelineRunFinder(tt.args.pipelineRuns), tt.args.pipeline, tt.args.jobRuns); !reflect.DeepEqual(got, tt.expectedPipelineRuns) {
 				t.Errorf("createBarePipelineRunsIfNotPresent() = %v, want %v", got, tt.expectedPipelineRuns)
 			}
+		})
+	}
+}
+
+func Test_hasPendingPipelineRuns(t *testing.T) {
+	type args struct {
+		items []v1alpha3.PipelineRun
+	}
+	tests := []struct {
+		name string
+		args args
+		want bool
+	}{{
+		name: "have pending PipelineRuns",
+		args: args{
+			items: []v1alpha3.PipelineRun{{
+				ObjectMeta: v1.ObjectMeta{
+					Annotations: map[string]string{
+						"a": "1",
+					},
+				},
+			}},
+		},
+		want: true,
+	}, {
+		name: "not have pending PipelineRuns",
+		args: args{
+			items: []v1alpha3.PipelineRun{{
+				ObjectMeta: v1.ObjectMeta{
+					Annotations: map[string]string{
+						v1alpha3.JenkinsPipelineRunIDAnnoKey: "1",
+					},
+				},
+			}},
+		},
+		want: false,
+	}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equalf(t, tt.want, hasPendingPipelineRuns(tt.args.items), "hasPendingPipelineRuns(%v)", tt.args.items)
 		})
 	}
 }

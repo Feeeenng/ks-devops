@@ -27,7 +27,7 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"kubesphere.io/devops/pkg/client/devops"
 )
@@ -82,8 +82,6 @@ const (
 
 	CheckPipelienCronUrl = "/job/%s/job/%s/descriptorByName/hudson.triggers.TimerTrigger/checkSpec?%s"
 	CheckCronUrl         = "/job/%s/descriptorByName/hudson.triggers.TimerTrigger/checkSpec?%s"
-	ToJenkinsfileUrl     = "/pipeline-model-converter/toJenkinsfile"
-	ToJsonUrl            = "/pipeline-model-converter/toJson"
 
 	cronJobLayout = "Monday, January 2, 2006 15:04:05 PM"
 )
@@ -824,7 +822,8 @@ func interanlErrorMessage() *devops.CheckCronRes {
 }
 
 func parseCronJobTime(msg string) (string, string, error) {
-
+	msg = strings.ReplaceAll(msg, "Coordinated Universal Time", "UTC")
+	msg = strings.ReplaceAll(msg, " at ", " ")
 	times := strings.Split(msg, ";")
 
 	lastTmp := strings.Split(times[0], " ")

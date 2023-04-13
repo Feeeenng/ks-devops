@@ -21,6 +21,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"kubesphere.io/devops/pkg/api/devops/v1alpha3"
+	"kubesphere.io/devops/pkg/api/gitops/v1alpha1"
+	helmv2 "kubesphere.io/devops/pkg/external/fluxcd/helm/v2beta1"
+	kusv1 "kubesphere.io/devops/pkg/external/fluxcd/kustomize/v1beta2"
+	sourcev1 "kubesphere.io/devops/pkg/external/fluxcd/source/v1beta2"
 )
 
 // addToSchemes may be used to add all resources defined in the project to a Scheme
@@ -33,5 +37,10 @@ func AddToScheme(s *runtime.Scheme) {
 
 func init() {
 	// Register the types with the Scheme so the components can map objects to GroupVersionKinds and back
-	addToSchemes = append(addToSchemes, v1alpha3.SchemeBuilder.AddToScheme)
+	addToSchemes = append(addToSchemes,
+		v1alpha3.SchemeBuilder.AddToScheme,
+		v1alpha1.SchemeBuilder.AddToScheme,
+		helmv2.SchemeBuilder.AddToScheme,
+		kusv1.SchemeBuilder.AddToScheme,
+		sourcev1.SchemeBuilder.AddToScheme)
 }

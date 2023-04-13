@@ -1,3 +1,19 @@
+/*
+Copyright 2022 The KubeSphere Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package config
 
 import (
@@ -15,12 +31,14 @@ import (
 	corev1lister "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"kubesphere.io/devops/pkg/client/devops"
 	"kubesphere.io/devops/pkg/client/devops/jenkins"
 	"kubesphere.io/devops/pkg/informers"
 	"time"
 )
+
+//+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;update;watch;create
 
 // ControllerOptions is the option of Jenkins configuration controller
 type ControllerOptions struct {
@@ -114,8 +132,8 @@ func (c *Controller) worker() {
 }
 
 // Start implements for Runnable interface.
-func (c *Controller) Start(stopCh <-chan struct{}) error {
-	return c.run(1, stopCh)
+func (c *Controller) Start(ctx context.Context) error {
+	return c.run(1, ctx.Done())
 }
 
 func (c *Controller) run(workers int, stopCh <-chan struct{}) error {

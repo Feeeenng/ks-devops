@@ -5,7 +5,7 @@ run:
   concurrency: 4
 
   # timeout for analysis, e.g. 30s, 5m, default is 1m
-  timeout: 5m
+  timeout: 8m
 
   skip-dirs:
     - .git
@@ -75,7 +75,6 @@ run:
     - pkg/client/k8s/kubernetes.go
     - pkg/client/k8s/null_client.go
     - pkg/client/s3/fake/fakes3.go
-    - pkg/client/sonarqube/interface.go
     - pkg/config/config.go
     - pkg/constants/constants.go
     - pkg/informers/informers.go
@@ -95,16 +94,11 @@ run:
     - pkg/server/options/options.go
     - pkg/server/params/params.go
     - pkg/utils/idutils/id_utils.go
-    - pkg/utils/idutils/id_utils_test.go
-    - pkg/client/sonarqube/options.go
-    - pkg/client/sonarqube/sonarqube.go
     - pkg/client/cache/simple_cache.go
     - pkg/kapis/devops/v1alpha2.handler.go
     - pkg/client/s3/s3.go
     - pkg/utils/reflectutils/deep.go
-    - pkg/models/auth/token.go
     - pkg/utils/hash.go
-    - pkg/utils/sliceutil/sliceutils.go
     - pkg/apiserver/authentication/options/authenticate_options.go
     - pkg/client/cache/redis.go
     - pkg/models/devops/s2ibinary_handler.go
@@ -122,17 +116,12 @@ run:
     - pkg/utils/reflectutils/reflect.go
     - pkg/api/devops/v1alpha1/s2ibinary_type.go
     - pkg/client/devops/interface.go
-    - pkg/utils/stringutils/string.go
     - pkg/models/resources/v1alpha3/devops/devops.go
     - pkg/models/resources/v1alpha3/interface.go
     - pkg/apiserver/query/field.go
-    - pkg/api/utils.go
-    - pkg/utils/readerutils/MD5Reader.go
     - cmd/controller/app/options/options.go
     - cmd/tools/jwt/app/kubernetes.go
     - cmd/apiserver/app/options/options.go
-    - pkg/utils/net/net.go
-    - pkg/utils/hashutil/MD5.go
     - pkg/kapis/oauth/register.go
     - pkg/apiserver/authentication/authenticators/bearertoken/bearertoken.go
     - pkg/apiserver/authentication/request/anonymous/anonymous.go
@@ -148,3 +137,12 @@ issues:
 linters:
   enable:
     - revive # replacement for golint
+
+linters-settings:
+  revive:
+    enable-all-rules: false
+    severity: error
+    rules:
+      - name: package-comments
+        severity: warning
+        disabled: true

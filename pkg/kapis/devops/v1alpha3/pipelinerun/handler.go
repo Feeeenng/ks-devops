@@ -1,20 +1,40 @@
+/*
+Copyright 2022 The KubeSphere Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package pipelinerun
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"k8s.io/apimachinery/pkg/types"
+	cmstore "kubesphere.io/devops/pkg/store/configmap"
+	"net/url"
 	"strconv"
 
+	"kubesphere.io/devops/pkg/kapis"
+
 	"github.com/emicklei/go-restful"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/klog"
-	"kubesphere.io/devops/pkg/api"
 	"kubesphere.io/devops/pkg/api/devops/v1alpha3"
 	"kubesphere.io/devops/pkg/apiserver/query"
 	apiserverrequest "kubesphere.io/devops/pkg/apiserver/request"
 	"kubesphere.io/devops/pkg/client/devops"
+	devopsClient "kubesphere.io/devops/pkg/client/devops"
 	"kubesphere.io/devops/pkg/models/pipelinerun"
 	resourcesV1alpha3 "kubesphere.io/devops/pkg/models/resources/v1alpha3"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -22,7 +42,8 @@ import (
 
 // apiHandlerOption holds some useful tools for API handler.
 type apiHandlerOption struct {
-	client client.Client
+	devopsClient devopsClient.Interface
+	client       client.Client
 }
 
 // apiHandler contains functions to handle coming request and give a response.
@@ -51,14 +72,14 @@ func (h *apiHandler) listPipelineRuns(request *restful.Request, response *restfu
 	pipeline := &v1alpha3.Pipeline{}
 	err = h.client.Get(context.Background(), client.ObjectKey{Namespace: nsName, Name: pipName}, pipeline)
 	if err != nil {
-		api.HandleError(request, response, err)
+		kapis.HandleError(request, response, err)
 		return
 	}
 
 	// build label selector
 	labelSelector, err := buildLabelSelector(queryParam, pipeline.Name)
 	if err != nil {
-		api.HandleError(request, response, err)
+		kapis.HandleError(request, response, err)
 		return
 	}
 
@@ -72,7 +93,7 @@ func (h *apiHandler) listPipelineRuns(request *restful.Request, response *restfu
 	var prs v1alpha3.PipelineRunList
 	// fetch PipelineRuns
 	if err := h.client.List(context.Background(), &prs, opts...); err != nil {
-		api.HandleError(request, response, err)
+		kapis.HandleError(request, response, err)
 		return
 	}
 
@@ -82,34 +103,6 @@ func (h *apiHandler) listPipelineRuns(request *restful.Request, response *restfu
 	}
 	apiResult := resourcesV1alpha3.ToListResult(convertPipelineRunsToObject(prs.Items), queryParam, listHandler)
 	_ = response.WriteAsJson(apiResult)
-
-	go func() {
-		err := h.requestSyncPipelineRun(client.ObjectKey{Namespace: pipeline.Namespace, Name: pipeline.Name})
-		if err != nil {
-			klog.Errorf("failed to request to synchronize PipelineRuns. Pipeline = %s", pipeline.Name)
-			return
-		}
-	}()
-}
-
-func (h *apiHandler) requestSyncPipelineRun(key client.ObjectKey) error {
-	// get latest Pipeline
-	pipelineToUpdate := &v1alpha3.Pipeline{}
-	err := h.client.Get(context.Background(), key, pipelineToUpdate)
-	if err != nil {
-		return err
-	}
-	// update pipeline annotations
-	if pipelineToUpdate.Annotations == nil {
-		pipelineToUpdate.Annotations = make(map[string]string)
-	}
-	pipelineToUpdate.Annotations[v1alpha3.PipelineRequestToSyncRunsAnnoKey] = "true"
-	// update the pipeline
-	if err := h.client.Update(context.Background(), pipelineToUpdate); err != nil && !apierrors.IsConflict(err) {
-		// we allow the conflict error here
-		return err
-	}
-	return nil
 }
 
 func (h *apiHandler) createPipelineRun(request *restful.Request, response *restful.Response) {
@@ -118,13 +111,13 @@ func (h *apiHandler) createPipelineRun(request *restful.Request, response *restf
 	branch := request.QueryParameter("branch")
 	payload := devops.RunPayload{}
 	if err := request.ReadEntity(&payload); err != nil && err != io.EOF {
-		api.HandleBadRequest(response, request, err)
+		kapis.HandleBadRequest(response, request, err)
 		return
 	}
 	// validate the Pipeline
 	var pipeline v1alpha3.Pipeline
 	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: nsName, Name: pipName}, &pipeline); err != nil {
-		api.HandleError(request, response, err)
+		kapis.HandleError(request, response, err)
 		return
 	}
 
@@ -133,7 +126,7 @@ func (h *apiHandler) createPipelineRun(request *restful.Request, response *restf
 		err error
 	)
 	if scm, err = CreateScm(&pipeline.Spec, branch); err != nil {
-		api.HandleBadRequest(response, request, err)
+		kapis.HandleBadRequest(response, request, err)
 		return
 	}
 
@@ -142,16 +135,16 @@ func (h *apiHandler) createPipelineRun(request *restful.Request, response *restf
 	if !ok || user == nil {
 		// should never happen
 		err := fmt.Errorf("unauthenticated user entered to create PipelineRun for Pipeline '%s/%s'", nsName, pipName)
-		api.HandleUnauthorized(response, request, err)
+		kapis.HandleUnauthorized(response, request, err)
 		return
 	}
 	// create PipelineRun
 	pr := CreatePipelineRun(&pipeline, &payload, scm)
-	if user != nil && user.GetName() != "" {
+	if user.GetName() != "" {
 		pr.GetAnnotations()[v1alpha3.PipelineRunCreatorAnnoKey] = user.GetName()
 	}
 	if err := h.client.Create(context.Background(), pr); err != nil {
-		api.HandleError(request, response, err)
+		kapis.HandleError(request, response, err)
 		return
 	}
 
@@ -165,7 +158,7 @@ func (h *apiHandler) getPipelineRun(request *restful.Request, response *restful.
 	// get pipelinerun
 	var pr v1alpha3.PipelineRun
 	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: nsName, Name: prName}, &pr); err != nil {
-		api.HandleError(request, response, err)
+		kapis.HandleError(request, response, err)
 		return
 	}
 	_ = response.WriteEntity(&pr)
@@ -174,23 +167,32 @@ func (h *apiHandler) getPipelineRun(request *restful.Request, response *restful.
 func (h *apiHandler) getNodeDetails(request *restful.Request, response *restful.Response) {
 	namespaceName := request.PathParameter("namespace")
 	pipelineRunName := request.PathParameter("pipelinerun")
+	ctx := request.Request.Context()
 
 	// get pipelinerun
 	pr := &v1alpha3.PipelineRun{}
-	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: namespaceName, Name: pipelineRunName}, pr); err != nil {
-		api.HandleError(request, response, err)
+	if err := h.client.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: pipelineRunName}, pr); err != nil {
+		kapis.HandleError(request, response, err)
 		return
 	}
 
 	// get stage status
 	stagesJSON, ok := pr.Annotations[v1alpha3.JenkinsPipelineRunStagesStatusAnnoKey]
 	if !ok {
-		// If the stages status dose not exist, set it as an empty array
-		stagesJSON = "[]"
+		if pipelineRunStore, err := cmstore.NewConfigMapStore(ctx, types.NamespacedName{
+			Namespace: namespaceName,
+			Name:      pipelineRunName,
+		}, h.client); err != nil {
+			// If the stages status does not exist, set it as an empty array
+			stagesJSON = "[]"
+		} else {
+			stagesJSON = pipelineRunStore.GetStages()
+		}
 	}
-	stages := []pipelinerun.NodeDetail{}
+
+	var stages []pipelinerun.NodeDetail
 	if err := json.Unmarshal([]byte(stagesJSON), &stages); err != nil {
-		api.HandleError(request, response, err)
+		kapis.HandleError(request, response, err)
 		return
 	}
 
@@ -203,4 +205,57 @@ func (h *apiHandler) getNodeDetails(request *restful.Request, response *restful.
 	}
 
 	_ = response.WriteEntity(&stages)
+}
+
+// downloadArtifact API to download artifacts from Jenkins
+func (h *apiHandler) downloadArtifact(request *restful.Request, response *restful.Response) {
+	namespaceName := request.PathParameter("namespace")
+	pipelineRunName := request.PathParameter("pipelinerun")
+	filename := request.QueryParameter("filename")
+
+	// get pipelinerun
+	pr := &v1alpha3.PipelineRun{}
+	err := h.client.Get(context.Background(), client.ObjectKey{Namespace: namespaceName, Name: pipelineRunName}, pr)
+	if err != nil {
+		kapis.HandleError(request, response, err)
+		return
+	}
+
+	filename, err = url.QueryUnescape(filename)
+	if err != nil {
+		kapis.HandleError(request, response, err)
+		return
+	}
+
+	buildID, exists := pr.GetPipelineRunID()
+	if !exists {
+		kapis.HandleError(request, response, fmt.Errorf("unable to get PipelineRun nodes due to not found run ID"))
+		return
+	}
+	pipelineName := pr.Labels[v1alpha3.PipelineNameLabelKey]
+
+	// request the Jenkins API to download artifact
+	body, err := h.devopsClient.DownloadArtifact(namespaceName, pipelineName, buildID, filename)
+	if err != nil {
+		kapis.HandleError(request, response, err)
+		return
+	}
+	defer func() {
+		_ = body.Close()
+	}()
+
+	buf := &bytes.Buffer{}
+	if _, err = io.Copy(buf, body); err != nil {
+		kapis.HandleError(request, response, err)
+		return
+	}
+
+	// add download header
+	response.AddHeader("Content-Type", "application/octet-stream")
+	response.AddHeader("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+	_, err = response.Write(buf.Bytes())
+	if err != nil {
+		kapis.HandleError(request, response, err)
+		return
+	}
 }

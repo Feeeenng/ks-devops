@@ -17,26 +17,26 @@ limitations under the License.
 package app
 
 import (
+	"context"
 	"fmt"
-
 	"github.com/jenkins-zh/jenkins-client/pkg/core"
+	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"kubesphere.io/devops/cmd/controller/app/options"
 	"kubesphere.io/devops/pkg/apis"
 	"kubesphere.io/devops/pkg/client/devops"
 	"kubesphere.io/devops/pkg/client/devops/jclient"
 	"kubesphere.io/devops/pkg/client/k8s"
-	"kubesphere.io/devops/pkg/client/s3"
 	"kubesphere.io/devops/pkg/config"
 	"kubesphere.io/devops/pkg/indexers"
 	"kubesphere.io/devops/pkg/informers"
-	"sigs.k8s.io/controller-runtime/pkg/runtime/signals"
+	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	cliflag "k8s.io/component-base/cli/flag"
-	"k8s.io/klog"
-	"k8s.io/klog/klogr"
+	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/klogr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
@@ -47,6 +47,9 @@ func NewControllerManagerCommand() *cobra.Command {
 	// Load configuration from disk via viper, /etc/kubesphere/kubesphere.[yaml,json,xxx]
 	conf, err := config.TryLoadFromDisk()
 	if err == nil {
+		if conf.ArgoCDOption == nil {
+			conf.ArgoCDOption = &config.ArgoCDOption{}
+		}
 		// make sure LeaderElection is not nil
 		// override devops controller manager options
 		s = &options.DevOpsControllerManagerOptions{
@@ -57,6 +60,7 @@ func NewControllerManagerCommand() *cobra.Command {
 				Secret:           conf.AuthenticationOptions.JwtSecret,
 				MaximumClockSkew: conf.AuthenticationOptions.MaximumClockSkew,
 			},
+			ArgoCDOption:   conf.ArgoCDOption,
 			FeatureOptions: s.FeatureOptions,
 			LeaderElection: s.LeaderElection,
 			LeaderElect:    s.LeaderElect,
@@ -108,7 +112,7 @@ func NewControllerManagerCommand() *cobra.Command {
 	return cmd
 }
 
-func Run(s *options.DevOpsControllerManagerOptions, stopCh <-chan struct{}) error {
+func Run(s *options.DevOpsControllerManagerOptions, ctx context.Context) error {
 	// Init k8s client
 	kubernetesClient, err := k8s.NewKubernetesClient(s.KubernetesOptions)
 	if err != nil {
@@ -121,8 +125,13 @@ func Run(s *options.DevOpsControllerManagerOptions, stopCh <-chan struct{}) erro
 	if s.JenkinsOptions != nil && len(s.JenkinsOptions.Host) != 0 {
 		// Make sure that Jenkins host is not empty
 		devopsClient, err = jclient.NewJenkinsClient(s.JenkinsOptions)
-		if err != nil {
-			return fmt.Errorf("failed to connect jenkins, please check jenkins status, error: %v", err)
+		if !s.JenkinsOptions.SkipVerify && err != nil {
+			errMsg := fmt.Sprintf("failed to connect jenkins, please check jenkins status, error: %v", err)
+			if s.JenkinsOptions.SkipVerify {
+				fmt.Println(errMsg)
+			} else {
+				return fmt.Errorf(errMsg)
+			}
 		}
 	}
 
@@ -166,15 +175,7 @@ func Run(s *options.DevOpsControllerManagerOptions, stopCh <-chan struct{}) erro
 		klog.Fatalf("unable to set up overall controller manager: %v", err)
 	}
 	apis.AddToScheme(mgr.GetScheme())
-
-	// Init s3 client
-	var s3Client s3.Interface
-	if s.S3Options != nil && len(s.S3Options.Endpoint) != 0 {
-		s3Client, err = s3.NewS3Client(s.S3Options)
-		if err != nil {
-			return fmt.Errorf("failed to connect to s3, please check s3 service status, error: %v", err)
-		}
-	}
+	_ = apiextensions.AddToScheme(mgr.GetScheme())
 
 	// register common meta types into schemas.
 	metav1.AddToGroupVersion(mgr.GetScheme(), metav1.SchemeGroupVersion)
@@ -184,22 +185,20 @@ func Run(s *options.DevOpsControllerManagerOptions, stopCh <-chan struct{}) erro
 		informerFactory,
 		devopsClient,
 		jenkinsCore,
-		s3Client,
-		s,
-		stopCh); err != nil {
+		s); err != nil {
 		return fmt.Errorf("unable to register controllers to the manager: %v", err)
 	}
 
-	if err := indexers.CreatePipelineRunSCMRefNameIndexer(mgr.GetCache()); err != nil {
+	if err = indexers.CreatePipelineRunSCMRefNameIndexer(mgr.GetCache()); err != nil {
 		return err
 	}
 
 	// Start cache data after all informer is registered
 	klog.V(0).Info("Starting cache resource from apiserver...")
-	informerFactory.Start(stopCh)
+	informerFactory.Start(ctx.Done())
 
 	klog.V(0).Info("Starting the controllers.")
-	if err = mgr.Start(stopCh); err != nil {
+	if err = mgr.Start(ctx); err != nil {
 		klog.Fatalf("unable to run the manager: %v", err)
 	}
 

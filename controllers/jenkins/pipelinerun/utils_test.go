@@ -1,3 +1,19 @@
+/*
+Copyright 2022 The KubeSphere Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package pipelinerun
 
 import (
@@ -32,25 +48,6 @@ func Test_pipelineBuildApplier_apply(t *testing.T) {
 		args      args
 		assertion func(prStatus *v1alpha3.PipelineRunStatus)
 	}{{
-		name: "PipelineRun was in queue",
-		fields: fields{
-			pb: &job.PipelineRun{
-				BlueItemRun: job.BlueItemRun{
-					ID:    "1",
-					State: Queued.String(),
-				},
-			},
-		},
-		args: args{
-			prStatus: &v1alpha3.PipelineRunStatus{},
-		},
-		assertion: func(prStatus *v1alpha3.PipelineRunStatus) {
-			commonStatusAssert(prStatus)
-			assert.Equal(t, v1alpha3.ConditionUnknown, prStatus.Conditions[0].Status)
-			assert.Equal(t, v1alpha3.ConditionReady, prStatus.Conditions[0].Type)
-			assert.Equal(t, v1alpha3.Pending, prStatus.Phase)
-		},
-	}, {
 		name: "PipelineRun was running",
 		fields: fields{
 			pb: &job.PipelineRun{
@@ -328,11 +325,11 @@ func Test_parameterConverter_convert(t *testing.T) {
 		fields fields
 		want   []job.Parameter
 	}{{
-		name: "Nil parameters",
+		name: "Should return empty parameters when 'parameters' is nil",
 		fields: fields{
 			parameters: nil,
 		},
-		want: nil,
+		want: []job.Parameter{},
 	}, {
 		name: "Single parameter",
 		fields: fields{

@@ -20,10 +20,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"kubesphere.io/devops/pkg/kapis/doc"
 	"net/http"
 	rt "runtime"
 	"time"
+
+	"kubesphere.io/devops/pkg/jwt/token"
+	"kubesphere.io/devops/pkg/kapis/common"
+	"kubesphere.io/devops/pkg/kapis/doc"
+	gitops "kubesphere.io/devops/pkg/kapis/gitops/v1alpha1"
 
 	"github.com/jenkins-zh/jenkins-client/pkg/core"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
@@ -45,7 +49,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/endpoints/handlers/responsewriters"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	runtimecache "sigs.k8s.io/controller-runtime/pkg/cache"
 
 	"kubesphere.io/devops/pkg/client/cache"
@@ -130,7 +134,8 @@ func (s *APIServer) PrepareRun(stopCh <-chan struct{}) error {
 
 // Install all KubeSphere api groups
 // Installation happens before all informers start to cache objects, so
-//   any attempt to list objects using listers will get empty results.
+//
+//	any attempt to list objects using listers will get empty results.
 func (s *APIServer) installKubeSphereAPIs() {
 	jenkinsCore := core.JenkinsCore{
 		URL:      s.Config.JenkinsOptions.Host,
@@ -139,6 +144,7 @@ func (s *APIServer) installKubeSphereAPIs() {
 	}
 
 	var wss []*restful.WebService
+	tokenIssue := getTokenIssue(s.Config)
 
 	v1alpha2WSS, err := devopsv1alpha2.AddToContainer(s.container,
 		s.InformerFactory.KubeSphereSharedInformerFactory(),
@@ -151,19 +157,30 @@ func (s *APIServer) installKubeSphereAPIs() {
 		jenkinsCore)
 	utilruntime.Must(err)
 	wss = append(wss, v1alpha2WSS...)
-	wss = append(wss, devopsv1alpha3.AddToContainer(s.container, s.DevopsClient, s.KubernetesClient, s.Client)...)
+	wss = append(wss, devopsv1alpha3.AddToContainer(s.container, s.DevopsClient, s.KubernetesClient, s.Client, tokenIssue, jenkinsCore)...)
 	wss = append(wss, oauth.AddToContainer(s.container,
 		auth.NewTokenOperator(
 			s.CacheClient,
 			s.Config.AuthenticationOptions),
 	))
+	wss = append(wss, gitops.AddToContainer(s.container, &common.Options{
+		GenericClient: s.Client,
+	}, s.Config.ArgoCDOption, s.Config.FluxCDOption)...)
 	doc.AddSwaggerService(wss, s.container)
 }
 
-func (s *APIServer) Run(stopCh <-chan struct{}) (err error) {
+func getTokenIssue(config *apiserverconfig.Config) token.Issuer {
+	return token.NewTokenIssuer(config.AuthenticationOptions.JwtSecret, config.AuthenticationOptions.MaximumClockSkew)
+}
+
+func (s *APIServer) Run(stopCh context.Context) (err error) {
 	if err := indexers.CreatePipelineRunSCMRefNameIndexer(s.RuntimeCache); err != nil {
 		return err
 	}
+	if err := indexers.CreatePipelineRunIdentityIndexer(s.RuntimeCache); err != nil {
+		return err
+	}
+
 	err = s.waitForResourceSync(stopCh)
 	if err != nil {
 		return err
@@ -173,11 +190,12 @@ func (s *APIServer) Run(stopCh <-chan struct{}) (err error) {
 	defer cancel()
 
 	go func() {
-		<-stopCh
+		<-stopCh.Done()
 		_ = s.Server.Shutdown(ctx)
 	}()
 
 	klog.V(0).Infof("Start listening on %s", s.Server.Addr)
+	klog.V(0).Infof("Open the swagger-ui from http://localhost%s/apidocs/?url=http://localhost:9090/apidocs.json", s.Server.Addr)
 	if s.Server.TLSConfig != nil {
 		err = s.Server.ListenAndServeTLS("", "")
 	} else {
@@ -212,7 +230,7 @@ func (s *APIServer) buildHandlerChain(stopCh <-chan struct{}) {
 	s.Server.Handler = handler
 }
 
-func (s *APIServer) waitForResourceSync(stopCh <-chan struct{}) error {
+func (s *APIServer) waitForResourceSync(stopCh context.Context) error {
 	klog.V(0).Info("Start cache objects")
 
 	discoveryClient := s.KubernetesClient.Kubernetes().Discovery()
@@ -234,8 +252,8 @@ func (s *APIServer) waitForResourceSync(stopCh <-chan struct{}) error {
 		return false
 	}
 
-	s.InformerFactory.KubernetesSharedInformerFactory().Start(stopCh)
-	s.InformerFactory.KubernetesSharedInformerFactory().WaitForCacheSync(stopCh)
+	s.InformerFactory.KubernetesSharedInformerFactory().Start(stopCh.Done())
+	s.InformerFactory.KubernetesSharedInformerFactory().WaitForCacheSync(stopCh.Done())
 
 	ksInformerFactory := s.InformerFactory.KubeSphereSharedInformerFactory()
 
@@ -259,8 +277,8 @@ func (s *APIServer) waitForResourceSync(stopCh <-chan struct{}) error {
 		}
 	}
 
-	ksInformerFactory.Start(stopCh)
-	ksInformerFactory.WaitForCacheSync(stopCh)
+	ksInformerFactory.Start(stopCh.Done())
+	ksInformerFactory.WaitForCacheSync(stopCh.Done())
 
 	// controller runtime cache for resources
 	go func() {

@@ -1,3 +1,19 @@
+/*
+Copyright 2022 The KubeSphere Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package pipeline
 
 import (
@@ -36,11 +52,11 @@ type Reconciler struct {
 
 //+kubebuilder:rbac:groups=devops.kubesphere.io,resources=pipelines,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=devops.kubesphere.io,resources=pipelines/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups="",resources=events,verbs=patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
-	ctx := context.Background()
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.log.WithValues("Pipeline", req.NamespacedName)
 	pipeline := &v1alpha3.Pipeline{}
 	if err := r.Get(ctx, req.NamespacedName, pipeline); err != nil {
@@ -146,7 +162,7 @@ func (r *Reconciler) updateAnnotations(annotations map[string]string, pipelineKe
 	})
 }
 
-// pipelineMetadataPredicate returns a predicate which only cares about CreateEvent.
+// pipelineMetadataPredicate returns a predicate.
 var pipelineMetadataPredicate = predicate.Funcs{
 	CreateFunc: func(ce event.CreateEvent) bool {
 		return true
@@ -155,6 +171,13 @@ var pipelineMetadataPredicate = predicate.Funcs{
 		return false
 	},
 	UpdateFunc: func(ue event.UpdateEvent) bool {
+		oldPipeline, okOld := ue.ObjectOld.(*v1alpha3.Pipeline)
+		newPipeline, okNew := ue.ObjectNew.(*v1alpha3.Pipeline)
+		if okOld && okNew {
+			if !reflect.DeepEqual(oldPipeline.Spec, newPipeline.Spec) {
+				return true
+			}
+		}
 		return false
 	},
 	GenericFunc: func(ge event.GenericEvent) bool {

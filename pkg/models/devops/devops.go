@@ -23,10 +23,11 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"kubesphere.io/devops/pkg/constants"
 	"net/http"
 	"strings"
 	"sync"
+
+	"kubesphere.io/devops/pkg/constants"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -34,13 +35,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/klog"
-
+	"k8s.io/klog/v2"
 	"kubesphere.io/devops/pkg/api/devops/v1alpha3"
 	devopsv1alpha3 "kubesphere.io/devops/pkg/api/devops/v1alpha3"
 	"kubesphere.io/devops/pkg/utils/secretutil"
 
 	"kubesphere.io/devops/pkg/api"
+	devopsapi "kubesphere.io/devops/pkg/api/devops"
 	"kubesphere.io/devops/pkg/apiserver/query"
 	kubesphere "kubesphere.io/devops/pkg/client/clientset/versioned"
 	"kubesphere.io/devops/pkg/client/devops"
@@ -64,6 +65,7 @@ type DevopsOperator interface {
 	DeletePipelineObj(projectName string, pipelineName string) error
 	UpdatePipelineObj(projectName string, pipeline *v1alpha3.Pipeline) (*v1alpha3.Pipeline, error)
 	ListPipelineObj(projectName string, query *query.Query) (api.ListResult, error)
+	UpdateJenkinsfile(projectName, pipelineName, mode, jenkinsfile string) error
 
 	CreateCredentialObj(projectName string, s *v1.Secret) (*v1.Secret, error)
 	GetCredentialObj(projectName string, secretName string) (*v1.Secret, error)
@@ -117,8 +119,7 @@ type DevopsOperator interface {
 	CheckScriptCompile(projectName, pipelineName string, req *http.Request) (*devops.CheckScript, error)
 	CheckCron(projectName string, req *http.Request) (*devops.CheckCronRes, error)
 
-	ToJenkinsfile(req *http.Request) (*devops.ResJenkinsfile, error)
-	ToJSON(req *http.Request) (map[string]interface{}, error)
+	GetJenkinsAgentLabels() ([]string, error)
 }
 
 type devopsOperator struct {
@@ -223,8 +224,8 @@ func (d devopsOperator) DeleteDevOpsProject(workspace string, projectName string
 }
 
 func (d devopsOperator) UpdateDevOpsProject(workspace string, project *v1alpha3.DevOpsProject) (*v1alpha3.DevOpsProject, error) {
-	if project.Labels == nil {
-		project.Labels = make(map[string]string)
+	if project.Annotations == nil {
+		project.Annotations = make(map[string]string)
 	}
 	project.Annotations[devopsv1alpha3.DevOpeProjectSyncStatusAnnoKey] = StatusPending
 	project.Annotations[devopsv1alpha3.DevOpeProjectSyncTimeAnnoKey] = GetSyncNowTime()
@@ -253,14 +254,17 @@ func (d devopsOperator) ListDevOpsProject(workspace string, limit, offset int) (
 }
 
 // pipelineobj in crd
-func (d devopsOperator) CreatePipelineObj(projectName string, pipeline *v1alpha3.Pipeline) (*v1alpha3.Pipeline, error) {
+func (d devopsOperator) CreatePipelineObj(projectName string, pipeline *v1alpha3.Pipeline) (pip *v1alpha3.Pipeline, err error) {
 	projectObj, err := d.ksclient.DevopsV1alpha3().DevOpsProjects().Get(d.context, projectName, metav1.GetOptions{})
-	if err != nil {
-		return nil, err
+	if err == nil {
+		if projectObj.Annotations == nil {
+			projectObj.Annotations = map[string]string{}
+		}
+		projectObj.Annotations[devopsv1alpha3.PipelineSyncStatusAnnoKey] = StatusPending
+		projectObj.Annotations[devopsv1alpha3.PipelineSyncTimeAnnoKey] = GetSyncNowTime()
+		pip, err = d.ksclient.DevopsV1alpha3().Pipelines(projectObj.Status.AdminNamespace).Create(d.context, pipeline, metav1.CreateOptions{})
 	}
-	projectObj.Annotations[devopsv1alpha3.PipelineSyncStatusAnnoKey] = StatusPending
-	projectObj.Annotations[devopsv1alpha3.PipelineSyncTimeAnnoKey] = GetSyncNowTime()
-	return d.ksclient.DevopsV1alpha3().Pipelines(projectObj.Status.AdminNamespace).Create(d.context, pipeline, metav1.CreateOptions{})
+	return
 }
 
 func (d devopsOperator) GetPipelineObj(projectName string, pipelineName string) (*v1alpha3.Pipeline, error) {
@@ -290,6 +294,11 @@ func (d devopsOperator) UpdatePipelineObj(projectName string, pipeline *v1alpha3
 	// trying to avoid the error of `Operation cannot be fulfilled on` by getting the latest resourceVersion
 	if latestPipe, err := d.ksclient.DevopsV1alpha3().Pipelines(ns).Get(d.context, name, metav1.GetOptions{}); err == nil {
 		pipeline.ResourceVersion = latestPipe.ResourceVersion
+
+		// avoid update the Jenkinsfile in this API, see also UpdateJenkinsfile
+		if pipeline.Spec.Pipeline != nil && latestPipe.Spec.Pipeline != nil {
+			pipeline.Spec.Pipeline.Jenkinsfile = latestPipe.Spec.Pipeline.Jenkinsfile
+		}
 	} else {
 		return nil, fmt.Errorf("cannot found pipeline %s/%s, error: %v", ns, name, err)
 	}
@@ -297,32 +306,68 @@ func (d devopsOperator) UpdatePipelineObj(projectName string, pipeline *v1alpha3
 	return d.ksclient.DevopsV1alpha3().Pipelines(ns).Update(d.context, pipeline, metav1.UpdateOptions{})
 }
 
-func (d devopsOperator) ListPipelineObj(projectName string, query *query.Query) (api.ListResult, error) {
+// UpdateJenkinsfile updates the Jenkinsfile value with specific edit mode
+func (d devopsOperator) UpdateJenkinsfile(projectName, pipelineName, mode, jenkinsfile string) (err error) {
+	var pipeline *devopsv1alpha3.Pipeline
+	if pipeline, err = d.ksclient.DevopsV1alpha3().Pipelines(projectName).Get(d.context, pipelineName, metav1.GetOptions{}); err != nil {
+		return
+	}
+
+	if pipeline.Annotations == nil {
+		pipeline.Annotations = map[string]string{}
+	}
+	pipeline.Annotations[devopsv1alpha3.PipelineJenkinsfileEditModeAnnoKey] = mode
+
+	switch mode {
+	case devopsv1alpha3.PipelineJenkinsfileEditModeJSON:
+		pipeline.Annotations[devopsv1alpha3.PipelineJenkinsfileValueAnnoKey] = jenkinsfile
+	case devopsv1alpha3.PipelineJenkinsfileEditModeRaw:
+		if pipeline.Spec.Pipeline != nil {
+			pipeline.Spec.Pipeline.Jenkinsfile = jenkinsfile
+		}
+	default:
+		err = fmt.Errorf("invalid edit mode: %s", mode)
+		return
+	}
+	_, err = d.ksclient.DevopsV1alpha3().Pipelines(projectName).Update(d.context, pipeline, metav1.UpdateOptions{})
+	return
+}
+
+func (d devopsOperator) ListPipelineObj(projectName string, queryParam *query.Query) (api.ListResult, error) {
 	project, err := d.ksclient.DevopsV1alpha3().DevOpsProjects().Get(d.context, projectName, metav1.GetOptions{})
 	if err != nil {
 		return api.ListResult{}, err
 	}
+
 	pipelines, err := d.ksclient.DevopsV1alpha3().Pipelines(project.Status.AdminNamespace).List(d.context, metav1.ListOptions{
-		LabelSelector: query.LabelSelector,
+		LabelSelector: queryParam.LabelSelector,
 	})
 
 	if err != nil {
 		return api.ListResult{}, err
 	}
 
+	// filter pipeline type & convert Pipeline to runtime.Object
+	pipelineType, typeExist := queryParam.Filters[query.FieldType]
 	var result = make([]runtime.Object, len(pipelines.Items))
 	for i, _ := range pipelines.Items {
+		if typeExist && string(pipelines.Items[i].Spec.Type) != string(pipelineType) {
+			continue
+		}
 		result = append(result, &pipelines.Items[i])
 	}
 
-	return *resourcesV1alpha3.DefaultList(result, query, resourcesV1alpha3.DefaultCompare(), resourcesV1alpha3.DefaultFilter()), nil
+	return *resourcesV1alpha3.DefaultList(result, queryParam, resourcesV1alpha3.DefaultCompare(), resourcesV1alpha3.DefaultFilter()), nil
 }
 
-//credentialobj in crd
+// CreateCredentialObj creates a secret
 func (d devopsOperator) CreateCredentialObj(projectName string, secret *v1.Secret) (*v1.Secret, error) {
 	projectObj, err := d.ksclient.DevopsV1alpha3().DevOpsProjects().Get(d.context, projectName, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
+	}
+	if secret.Annotations == nil {
+		secret.Annotations = map[string]string{}
 	}
 	secret.Annotations[devopsv1alpha3.CredentialAutoSyncAnnoKey] = "true"
 	secret.Annotations[devopsv1alpha3.CredentialSyncStatusAnnoKey] = StatusPending
@@ -342,9 +387,7 @@ func (d devopsOperator) GetCredentialObj(projectName string, secretName string) 
 	if secret, err := d.k8sclient.CoreV1().Secrets(projectObj.Status.AdminNamespace).Get(d.context, secretName, metav1.GetOptions{}); err != nil {
 		return nil, err
 	} else {
-		// TODO Mask the secret if there is no place to use plain secret.
-		// return secretutil.MaskCredential(secret), nil
-		return secret, nil
+		return secretutil.MaskCredential(secret), nil
 	}
 }
 
@@ -360,6 +403,9 @@ func (d devopsOperator) UpdateCredentialObj(projectName string, secret *v1.Secre
 	projectObj, err := d.ksclient.DevopsV1alpha3().DevOpsProjects().Get(d.context, projectName, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
+	}
+	if secret.Annotations == nil {
+		secret.Annotations = map[string]string{}
 	}
 	secret.Annotations[devopsv1alpha3.CredentialAutoSyncAnnoKey] = "true"
 	secret.Annotations[devopsv1alpha3.CredentialSyncStatusAnnoKey] = StatusPending
@@ -935,26 +981,14 @@ func (d devopsOperator) CheckCron(projectName string, req *http.Request) (*devop
 	return res, err
 }
 
-func (d devopsOperator) ToJenkinsfile(req *http.Request) (*devops.ResJenkinsfile, error) {
-
-	res, err := d.devopsClient.ToJenkinsfile(convertToHttpParameters(req))
-	if err != nil {
-		klog.Error(err)
-		return nil, err
+func (d devopsOperator) GetJenkinsAgentLabels() (labels []string, err error) {
+	var cm *v1.ConfigMap
+	if cm, err = d.k8sclient.CoreV1().ConfigMaps("kubesphere-devops-system").
+		Get(context.Background(), "jenkins-agent-config", metav1.GetOptions{}); err == nil {
+		labelsInStr := cm.Data[devopsapi.JenkinsAgentLabelsKey]
+		labels = strings.Split(labelsInStr, ",")
 	}
-
-	return res, err
-}
-
-func (d devopsOperator) ToJSON(req *http.Request) (map[string]interface{}, error) {
-
-	res, err := d.devopsClient.ToJSON(convertToHttpParameters(req))
-	if err != nil {
-		klog.Error(err)
-		return nil, err
-	}
-
-	return res, err
+	return
 }
 
 func (d devopsOperator) isGenerateNameUnique(workspace, generateName string) (bool, error) {

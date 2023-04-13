@@ -1,11 +1,27 @@
+/*
+Copyright 2022 The KubeSphere Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package v1alpha3
 
 import (
-	"github.com/stretchr/testify/assert"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestPipelineRunSpec_IsMultiBranchPipeline(t *testing.T) {
@@ -180,6 +196,47 @@ func TestPipelineRun_HasStarted(t *testing.T) {
 			assert.NotNil(t, pr.Status.DeepCopy())
 			assert.NotNil(t, pr.Spec.DeepCopy())
 			assert.Equalf(t, tt.want, pr.HasStarted(), "HasStarted()")
+		})
+	}
+}
+
+func TestBuildPipelineRunIdentifier(t *testing.T) {
+	type args struct {
+		pipelineName string
+		scmRefName   string
+		runID        string
+	}
+	tests := []struct {
+		name string
+		args args
+		want string
+	}{{
+		name: "Without all of arguments",
+		args: args{},
+		want: "",
+	}, {
+		name: "Without SCM reference name",
+		args: args{
+			pipelineName: "fake-pipeline",
+			scmRefName:   "",
+			runID:        "1",
+		},
+		want: "fake-pipeline-1",
+	}, {
+		name: "With SCM reference name",
+		args: args{
+			pipelineName: "fake-pipeline",
+			scmRefName:   "main",
+			runID:        "1",
+		},
+		want: "fake-pipeline-main-1",
+	},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := BuildPipelineRunIdentifier(tt.args.pipelineName, tt.args.scmRefName, tt.args.runID); got != tt.want {
+				t.Errorf("BuildPipelineRunIdentifier() = %v, want %v", got, tt.want)
+			}
 		})
 	}
 }

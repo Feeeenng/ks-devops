@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"kubesphere.io/devops/pkg/config"
+
 	"kubesphere.io/devops/pkg/client/devops/jenkins"
 	"kubesphere.io/devops/pkg/client/k8s"
 	"kubesphere.io/devops/pkg/client/s3"
@@ -30,7 +32,7 @@ import (
 	"github.com/spf13/pflag"
 	"k8s.io/client-go/tools/leaderelection"
 	cliflag "k8s.io/component-base/cli/flag"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 type DevOpsControllerManagerOptions struct {
@@ -42,6 +44,7 @@ type DevOpsControllerManagerOptions struct {
 	S3Options         *s3.Options
 	FeatureOptions    *FeatureOptions
 	JWTOptions        *JWTOptions
+	ArgoCDOption      *config.ArgoCDOption
 
 	// KubeSphere is using sigs.k8s.io/application as fundamental object to implement Application Management.
 	// There are other projects also built on sigs.k8s.io/application, when KubeSphere installed along side
@@ -65,6 +68,8 @@ func NewDevOpsControllerManagerOptions() *DevOpsControllerManagerOptions {
 		LeaderElect:         false,
 		WebhookCertDir:      "",
 		ApplicationSelector: "",
+		KubernetesOptions:   &k8s.KubernetesOptions{},
+		ArgoCDOption:        &config.ArgoCDOption{},
 	}
 
 	return s
@@ -76,6 +81,7 @@ func (s *DevOpsControllerManagerOptions) Flags() cliflag.NamedFlagSets {
 	s.KubernetesOptions.AddFlags(fss.FlagSet("kubernetes"), s.KubernetesOptions)
 	s.JenkinsOptions.AddFlags(fss.FlagSet("devops"), s.JenkinsOptions)
 	s.FeatureOptions.AddFlags(fss.FlagSet("feature"), s.FeatureOptions)
+	s.ArgoCDOption.AddFlags(fss.FlagSet("argocd"))
 
 	fs := fss.FlagSet("leaderelection")
 	s.bindLeaderElectionFlags(s.LeaderElection, fs)

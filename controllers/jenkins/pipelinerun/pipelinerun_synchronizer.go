@@ -1,3 +1,19 @@
+/*
+Copyright 2022 The KubeSphere Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package pipelinerun
 
 import (
@@ -36,8 +52,7 @@ type SyncReconciler struct {
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
-	ctx := context.Background()
+func (r *SyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.log.WithValues("Pipeline", req.NamespacedName)
 	pipeline := &v1alpha3.Pipeline{}
 	if err := r.Client.Get(ctx, req.NamespacedName, pipeline); err != nil {
@@ -53,6 +68,12 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		v1alpha3.PipelineNameLabelKey: pipeline.Name,
 	}); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	// skip if there are any PipelineRuns don't have v1alpha3.JenkinsPipelineRunIDAnnoKey
+	// wait it until all PipelineRuns have the run id from Jenkins
+	if hasPendingPipelineRuns(prList.Items) {
+		return ctrl.Result{}, nil
 	}
 
 	boClient := job.BlueOceanClient{
@@ -87,6 +108,16 @@ func (r *SyncReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	r.recorder.Eventf(pipeline, v1.EventTypeNormal, PipelineRunSynced,
 		"Successfully synchronized %d PipelineRuns(s). PipelineRuns/JenkinsRuns proportion is %d/%d", len(pipelineRunsToBeCreated), len(prList.Items), len(jobRuns))
 	return ctrl.Result{}, nil
+}
+
+func hasPendingPipelineRuns(items []v1alpha3.PipelineRun) bool {
+	for i := range items {
+		item := items[i]
+		if id, ok := item.Annotations[v1alpha3.JenkinsPipelineRunIDAnnoKey]; !ok || id == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func createBarePipelineRunsIfNotPresent(finder pipelineRunFinder, pipeline *v1alpha3.Pipeline, jobRuns []job.PipelineRun) []v1alpha3.PipelineRun {
@@ -187,11 +218,11 @@ func (r *SyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func requestSyncPredicate() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
-			_, ok := e.Meta.GetAnnotations()[v1alpha3.PipelineRequestToSyncRunsAnnoKey]
+			_, ok := e.Object.GetAnnotations()[v1alpha3.PipelineRequestToSyncRunsAnnoKey]
 			return ok
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			_, ok := e.MetaNew.GetAnnotations()[v1alpha3.PipelineRequestToSyncRunsAnnoKey]
+			_, ok := e.ObjectNew.GetAnnotations()[v1alpha3.PipelineRequestToSyncRunsAnnoKey]
 			return ok
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {

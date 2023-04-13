@@ -1,8 +1,25 @@
+/*
+Copyright 2022 The KubeSphere Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package pipelinerun
 
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -52,6 +69,8 @@ func convertParameters(payload *devops.RunPayload) []v1alpha3.Parameter {
 
 // CreateScm creates SCM for multi-branch Pipeline.
 func CreateScm(ps *v1alpha3.PipelineSpec, branch string) (*v1alpha3.SCM, error) {
+	branch = strings.TrimPrefix(branch, "refs/heads/")
+
 	var scm *v1alpha3.SCM
 	if ps.Type == v1alpha3.MultiBranchPipelineType {
 		if branch == "" {
@@ -77,6 +96,11 @@ func getPipelineRef(pipeline *v1alpha3.Pipeline) *corev1.ObjectReference {
 
 // CreatePipelineRun creates a bare PipelineRun.
 func CreatePipelineRun(pipeline *v1alpha3.Pipeline, payload *devops.RunPayload, scm *v1alpha3.SCM) *v1alpha3.PipelineRun {
+	return CreateBarePipelineRun(pipeline, convertParameters(payload), scm)
+}
+
+// CreateBarePipelineRun creates a bare PipelineRun.
+func CreateBarePipelineRun(pipeline *v1alpha3.Pipeline, parameters []v1alpha3.Parameter, scm *v1alpha3.SCM) *v1alpha3.PipelineRun {
 	controllerRef := metav1.NewControllerRef(pipeline, pipeline.GroupVersionKind())
 	pipelineRun := &v1alpha3.PipelineRun{
 		ObjectMeta: metav1.ObjectMeta{
@@ -92,7 +116,7 @@ func CreatePipelineRun(pipeline *v1alpha3.Pipeline, payload *devops.RunPayload, 
 		Spec: v1alpha3.PipelineRunSpec{
 			PipelineRef:  getPipelineRef(pipeline),
 			PipelineSpec: &pipeline.Spec,
-			Parameters:   convertParameters(payload),
+			Parameters:   parameters,
 			SCM:          scm,
 		},
 	}

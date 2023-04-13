@@ -18,6 +18,7 @@ package v1alpha3
 
 import (
 	"sort"
+	"strings"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -75,6 +76,7 @@ type PipelineRunStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="ID",type=string,JSONPath=`.metadata.annotations.devops\.kubesphere\.io/jenkins-pipelinerun-id`,description="The id of a PipelineRun"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`,description="The phase of a PipelineRun"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`,description="The age of a PipelineRun"
 // +kubebuilder:resource:shortName="pr",categories="devops"
@@ -167,6 +169,35 @@ func (pr *PipelineRun) GetPipelineRunID() (pipelineRunID string, exist bool) {
 	return
 }
 
+// GetPipelineRunIdentifier returns an identifier string which can identify a PipelineRun,
+// even if the PipelineRun belongs to multi-branch or non multi-branch Pipeline.
+// Format of the string: [scm.ref-name]-runID
+// TODO Add unit test against this method
+func (pr *PipelineRun) GetPipelineRunIdentifier() string {
+	pipelineName := pr.GetLabels()[PipelineNameLabelKey]
+	scmRefName := ""
+	if pr.Spec.IsMultiBranchPipeline() && pr.Spec.SCM != nil {
+		scmRefName = pr.Spec.SCM.RefName
+	}
+	runID := pr.Annotations[JenkinsPipelineRunIDAnnoKey]
+	return BuildPipelineRunIdentifier(pipelineName, scmRefName, runID)
+}
+
+// BuildPipelineRunIdentifier builds PipelineRun identifier with Pipeline name, SCM reference name and run ID.
+func BuildPipelineRunIdentifier(pipelineName, scmRefName, runID string) string {
+	var identifierItem []string
+	if pipelineName != "" {
+		identifierItem = append(identifierItem, pipelineName)
+	}
+	if scmRefName != "" {
+		identifierItem = append(identifierItem, scmRefName)
+	}
+	if runID != "" {
+		identifierItem = append(identifierItem, runID)
+	}
+	return strings.Join(identifierItem, "-")
+}
+
 // Parameter is an option that can be passed with the endpoint to influence the Pipeline Run
 type Parameter struct {
 	// Name indicates that name of the parameter.
@@ -208,18 +239,16 @@ type RunPhase string
 const (
 	// Pending indicates that the PipelineRun is pending.
 	Pending RunPhase = "Pending"
-
 	// Running indicates that the PipelineRun is running.
 	Running RunPhase = "Running"
-
 	// Succeeded indicates that the PipelineRun has succeeded.
 	Succeeded RunPhase = "Succeeded"
-
 	// Failed indicates that the PipelineRun has failed.
 	Failed RunPhase = "Failed"
-
 	// Unknown indicates that the PipelineRun has an unknown status.
 	Unknown RunPhase = "Unknown"
+	// Cancelled indicates that the PipelineRun has been cancelled
+	Cancelled RunPhase = "Cancelled"
 )
 
 // ConditionType is type of PipelineRun condition.

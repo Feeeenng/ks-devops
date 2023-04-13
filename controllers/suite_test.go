@@ -30,6 +30,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	devopsv1alpha1 "kubesphere.io/devops/pkg/api/devops/v1alpha1"
 	devopsv1alpha3 "kubesphere.io/devops/pkg/api/devops/v1alpha3"
 	// +kubebuilder:scaffold:imports
 )
@@ -51,7 +52,7 @@ func testAPIs(t *testing.T) {
 }
 
 var _ = BeforeSuite(func(done Done) {
-	logf.SetLogger(zap.LoggerTo(GinkgoWriter, true))
+	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
@@ -66,10 +67,7 @@ var _ = BeforeSuite(func(done Done) {
 	err = devopsv1alpha3.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = devopsv1alpha3.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
-
-	err = devopsv1alpha3.AddToScheme(scheme.Scheme)
+	err = devopsv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme

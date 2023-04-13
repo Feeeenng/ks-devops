@@ -24,6 +24,8 @@ import (
 	"github.com/spf13/pflag"
 )
 
+const DefaultAdminPassword = "119d76305a05e7a2a65d096f71feb77921"
+
 type Options struct {
 	Host            string        `json:",omitempty" yaml:"host" description:"Jenkins service host address"`
 	Username        string        `json:",omitempty" yaml:"username" description:"Jenkins admin username"`
@@ -32,6 +34,7 @@ type Options struct {
 	Namespace       string        `json:"namespace,omitempty" yaml:"namespace"`
 	WorkerNamespace string        `json:"workerNamespace,omitempty" yaml:"workerNamespace"`
 	ReloadCasCDelay time.Duration `json:"reloadCasCDelay,omitempty" yaml:"reloadCasCDelay"`
+	SkipVerify      bool
 }
 
 // NewJenkinsOptions returns a `zero` instance
@@ -70,6 +73,10 @@ func (s *Options) Validate() []error {
 		errors = append(errors, fmt.Errorf("jenkins's username or password is empty"))
 	}
 
+	if s.Password == DefaultAdminPassword {
+		errors = append(errors, fmt.Errorf("the token of the Jenkins needs to update"))
+	}
+
 	if s.MaxConnections <= 0 {
 		errors = append(errors, fmt.Errorf("jenkins's maximum connections should be greater than 0"))
 	}
@@ -90,6 +97,8 @@ func (s *Options) AddFlags(fs *pflag.FlagSet, c *Options) {
 
 	fs.IntVar(&s.MaxConnections, "jenkins-max-connections", c.MaxConnections, ""+
 		"Maximum allowed connections to Jenkins. ")
+	fs.BoolVar(&s.SkipVerify, "jenkins-skip-verify", false,
+		"Indicate if you want to skip the Jenkins connection verify")
 
 	fs.StringVar(&s.Namespace, "namespace", c.Namespace, "Namespace where devops system is in.")
 	fs.StringVar(&s.WorkerNamespace, "worker-namespace", c.WorkerNamespace, "Namespace where Jenkins agent workers are in.")

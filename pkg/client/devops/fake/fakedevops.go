@@ -18,6 +18,7 @@ package fake
 
 import (
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -189,6 +190,10 @@ func (d *Devops) RunPipeline(projectName, pipelineName string, httpParameters *d
 func (d *Devops) GetArtifacts(projectName, pipelineName, runId string, httpParameters *devops.HttpParameters) ([]devops.Artifacts, error) {
 	return nil, nil
 }
+func (d *Devops) DownloadArtifact(projectName, pipelineName, runId, filename string) (io.ReadCloser, error) {
+	return nil, nil
+}
+
 func (d *Devops) GetRunLog(projectName, pipelineName, runId string, httpParameters *devops.HttpParameters) ([]byte, error) {
 	return nil, nil
 }
@@ -211,7 +216,7 @@ func (d *Devops) SubmitInputStep(projectName, pipelineName, runId, nodeId, stepI
 	return nil, nil
 }
 
-//BranchPipelinne operator interface
+// BranchPipelinne operator interface
 func (d *Devops) GetBranchPipeline(projectName, pipelineName, branchName string, httpParameters *devops.HttpParameters) (*devops.BranchPipeline, error) {
 	return nil, nil
 }
@@ -283,7 +288,7 @@ func (d *Devops) Validate(scmId string, httpParameters *devops.HttpParameters) (
 	return nil, nil
 }
 
-//Webhook operator interface
+// Webhook operator interface
 func (d *Devops) GetNotifyCommit(httpParameters *devops.HttpParameters) ([]byte, error) {
 	return nil, nil
 }
@@ -298,12 +303,6 @@ func (d *Devops) CheckScriptCompile(projectName, pipelineName string, httpParame
 	return nil, nil
 }
 func (d *Devops) CheckCron(projectName string, httpParameters *devops.HttpParameters) (*devops.CheckCronRes, error) {
-	return nil, nil
-}
-func (d *Devops) ToJenkinsfile(httpParameters *devops.HttpParameters) (*devops.ResJenkinsfile, error) {
-	return nil, nil
-}
-func (d *Devops) ToJSON(httpParameters *devops.HttpParameters) (map[string]interface{}, error) {
 	return nil, nil
 }
 
@@ -390,9 +389,6 @@ func (d *Devops) GetCredentialInProject(projectId, id string) (*devops.Credentia
 	}
 	return &devops.Credential{Id: id}, nil
 }
-func (d *Devops) GetCredentialsInProject(projectId string) ([]*devops.Credential, error) {
-	return nil, nil
-}
 func (d *Devops) DeleteCredentialInProject(projectId, id string) (string, error) {
 	if _, ok := d.Credentials[projectId][id]; !ok {
 		err := &devops.ErrorResponse{
@@ -445,7 +441,9 @@ func (d *Devops) CreateProjectPipeline(projectId string, pipeline *devopsv1alpha
 		err := fmt.Errorf("pipeline name [%s] has been used", pipeline.Name)
 		return "", restful.NewError(http.StatusConflict, err.Error())
 	}
-	d.Pipelines[projectId][pipeline.Name] = pipeline
+	if d.Pipelines[projectId] != nil {
+		d.Pipelines[projectId][pipeline.Name] = pipeline
+	}
 	return "", nil
 }
 

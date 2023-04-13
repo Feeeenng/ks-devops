@@ -22,11 +22,12 @@ import (
 	"fmt"
 	v1 "k8s.io/api/core/v1"
 	"kubesphere.io/devops/pkg/client/cache"
+	"kubesphere.io/devops/pkg/client/devops/jclient"
 	"kubesphere.io/devops/pkg/client/sonarqube"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cliflag "k8s.io/component-base/cli/flag"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"kubesphere.io/devops/pkg/apis"
 	"kubesphere.io/devops/pkg/apiserver"
 	"kubesphere.io/devops/pkg/client/clientset/versioned/scheme"
@@ -37,7 +38,6 @@ import (
 	"net/http"
 	"strings"
 
-	"kubesphere.io/devops/pkg/client/devops/jenkins"
 	"kubesphere.io/devops/pkg/client/k8s"
 	"kubesphere.io/devops/pkg/client/s3"
 	fakes3 "kubesphere.io/devops/pkg/client/s3/fake"
@@ -68,6 +68,8 @@ func (s *ServerRunOptions) Flags() (fss cliflag.NamedFlagSets) {
 	s.JenkinsOptions.AddFlags(fss.FlagSet("devops"), s.JenkinsOptions)
 	s.SonarQubeOptions.AddFlags(fss.FlagSet("sonarqube"), s.SonarQubeOptions)
 	s.S3Options.AddFlags(fss.FlagSet("s3"), s.S3Options)
+	s.ArgoCDOption.AddFlags(fss.FlagSet("argocd"))
+	s.FluxCDOption.AddFlags(fss.FlagSet("fluxcd"))
 
 	fs = fss.FlagSet("klog")
 	local := flag.NewFlagSet("klog", flag.ExitOnError)
@@ -110,8 +112,8 @@ func (s *ServerRunOptions) NewAPIServer(stopCh <-chan struct{}) (*apiserver.APIS
 		}
 	}
 
-	if s.JenkinsOptions.Host != "" {
-		devopsClient, err := jenkins.NewDevopsClient(s.JenkinsOptions)
+	if !s.JenkinsOptions.SkipVerify && s.JenkinsOptions.Host != "" {
+		devopsClient, err := jclient.NewJenkinsClient(s.JenkinsOptions)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to jenkins, please check jenkins status, error: %v", err)
 		}

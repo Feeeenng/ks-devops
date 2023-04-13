@@ -1,7 +1,31 @@
+/*
+Copyright 2022 The KubeSphere Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package v1alpha2
 
 import (
 	"context"
+	sonargo "github.com/kubesphere/sonargo/sonar"
+	"kubesphere.io/devops/pkg/client/s3/fake"
+	"kubesphere.io/devops/pkg/client/sonarqube"
+	"kubesphere.io/devops/pkg/informers"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
 	"github.com/emicklei/go-restful"
 	"github.com/jenkins-zh/jenkins-client/pkg/core"
 	"github.com/stretchr/testify/assert"
@@ -12,15 +36,15 @@ import (
 	fakedevops "kubesphere.io/devops/pkg/client/devops/fake"
 	"kubesphere.io/devops/pkg/client/k8s"
 	"kubesphere.io/devops/pkg/constants"
-	"net/http"
-	"net/http/httptest"
-	"testing"
 )
 
 func TestAPIsExist(t *testing.T) {
 	httpWriter := httptest.NewRecorder()
+	container := restful.NewContainer()
+	assert.NotNil(t, container)
 
-	_, err := AddToContainer(restful.DefaultContainer, nil, fakedevops.NewFakeDevops(nil),
+	// case 1, sonarqube client is nil
+	_, err := AddToContainer(container, nil, fakedevops.NewFakeDevops(nil),
 		nil,
 		fakeclientset.NewSimpleClientset(&v1alpha3.DevOpsProject{
 			ObjectMeta: metav1.ObjectMeta{Name: "fake"},
@@ -28,6 +52,25 @@ func TestAPIsExist(t *testing.T) {
 			fakeclientset.NewSimpleClientset(&v1alpha3.DevOpsProject{
 				ObjectMeta: metav1.ObjectMeta{Name: "fake"},
 			})), core.JenkinsCore{})
+	assert.Nil(t, err)
+
+	// case 2, sonarqube client is valid
+	container = restful.NewContainer()
+	assert.NotNil(t, container)
+
+	k8sclient := k8s.NewFakeClientSets(k8sfake.NewSimpleClientset(), nil, nil, "", nil,
+		fakeclientset.NewSimpleClientset(&v1alpha3.DevOpsProject{
+			ObjectMeta: metav1.ObjectMeta{Name: "fake"},
+		}))
+	ksclient := fakeclientset.NewSimpleClientset(&v1alpha3.DevOpsProject{
+		ObjectMeta: metav1.ObjectMeta{Name: "fake"},
+	})
+	informerFactory := informers.NewInformerFactories(k8sclient.Kubernetes(), ksclient,
+		k8sclient.ApiExtensions())
+
+	_, err = AddToContainer(container, informerFactory.KubeSphereSharedInformerFactory(), fakedevops.NewFakeDevops(nil),
+		sonarqube.NewSonar(&sonargo.Client{}),
+		ksclient, fake.NewFakeS3(), "", k8sclient, core.JenkinsCore{})
 	assert.Nil(t, err)
 
 	type args struct {
@@ -193,13 +236,25 @@ func TestAPIsExist(t *testing.T) {
 			method: http.MethodPost,
 			uri:    "/tojenkinsfile",
 		},
+	}, {
+		name: "/devops/{devops}/pipelines/{pipeline}/sonarstatus",
+		args: args{
+			method: http.MethodGet,
+			uri:    "/devops/ns/pipelines/fake/sonarstatus",
+		},
+	}, {
+		name: "/devops/{devops}/pipelines/{pipeline}/branches/{branch}/sonarstatus",
+		args: args{
+			method: http.MethodGet,
+			uri:    "/devops/ns/pipelines/fake/branches/master/sonarstatus",
+		},
 	}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			httpRequest, _ := http.NewRequest(tt.args.method,
 				"http://fake.com/kapis/devops.kubesphere.io/v1alpha2"+tt.args.uri, nil)
 			httpRequest = httpRequest.WithContext(context.WithValue(context.TODO(), constants.K8SToken, constants.ContextKeyK8SToken("")))
-			restful.DefaultContainer.Dispatch(httpWriter, httpRequest)
+			container.Dispatch(httpWriter, httpRequest)
 			assert.NotEqual(t, httpWriter.Code, 404)
 		})
 	}

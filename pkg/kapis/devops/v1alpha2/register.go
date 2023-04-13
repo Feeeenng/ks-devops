@@ -19,17 +19,18 @@ package v1alpha2
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
+
 	"github.com/jenkins-zh/jenkins-client/pkg/core"
 	"kubesphere.io/devops/pkg/apiserver/runtime"
 	"kubesphere.io/devops/pkg/client/k8s"
-	"net/url"
-	"strings"
 
 	"github.com/emicklei/go-restful"
 	restfulspec "github.com/emicklei/go-restful-openapi"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/proxy"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	devopsv1alpha1 "kubesphere.io/devops/pkg/api/devops/v1alpha1"
 
@@ -44,6 +45,12 @@ import (
 
 	"kubesphere.io/devops/pkg/client/devops"
 )
+
+// TODO perhaps we can find a better way to declaim the permission needs of the apiserver
+//+kubebuilder:rbac:groups=devops.kubesphere.io,resources=s2ibinaries,verbs=get;list;update;delete;watch
+//+kubebuilder:rbac:groups=devops.kubesphere.io,resources=s2ibuildertemplates,verbs=get;list;update;delete;watch
+//+kubebuilder:rbac:groups=devops.kubesphere.io,resources=s2ibuilders,verbs=get;list;update;delete;watch
+//+kubebuilder:rbac:groups=devops.kubesphere.io,resources=s2iruns,verbs=get;list;update;delete;watch
 
 var GroupVersion = schema.GroupVersion{Group: api.GroupName, Version: "v1alpha2"}
 
@@ -533,6 +540,7 @@ func AddPipelineToWebService(webservice *restful.WebService, devopsClient devops
 		// match "/blue/rest/organizations/jenkins/scm/{scm}/organizations/?credentialId=github"
 		webservice.Route(webservice.GET("/scms/{scm}/organizations").
 			To(projectPipelineHandler.GetSCMOrg).
+			Deprecate().
 			Metadata(restfulspec.KeyOpenAPITags, []string{constants.DevOpsScmTag}).
 			Doc("List all organizations of the specified source configuration management (SCM) such as Github.").
 			Param(webservice.PathParameter("scm", "the ID of the source configuration management (SCM).")).
@@ -543,6 +551,7 @@ func AddPipelineToWebService(webservice *restful.WebService, devopsClient devops
 		// match "/blue/rest/organizations/jenkins/scm/{scm}/organizations/{organization}/repositories/?credentialId=&pageNumber&pageSize="
 		webservice.Route(webservice.GET("/scms/{scm}/organizations/{organization}/repositories").
 			To(projectPipelineHandler.GetOrgRepo).
+			Deprecate().
 			Metadata(restfulspec.KeyOpenAPITags, []string{constants.DevOpsScmTag}).
 			Doc("List all repositories in the specified organization.").
 			Param(webservice.PathParameter("scm", "The ID of the source configuration management (SCM).")).
@@ -622,35 +631,6 @@ func AddPipelineToWebService(webservice *restful.WebService, devopsClient devops
 			Reads(devops.CronData{}).
 			Returns(http.StatusOK, api.StatusOK, devops.CheckCronRes{}).
 			Writes(devops.CheckCronRes{}))
-
-		// match /pipeline-model-converter/toJenkinsfile
-		webservice.Route(webservice.POST("/tojenkinsfile").
-			To(projectPipelineHandler.ToJenkinsfile).
-			Metadata(restfulspec.KeyOpenAPITags, []string{constants.DevOpsJenkinsfileTag}).
-			Consumes("application/x-www-form-urlencoded").
-			Produces("application/json", "charset=utf-8").
-			Doc("Convert json to jenkinsfile format.").
-			Reads(devops.ReqJson{}).
-			Returns(http.StatusOK, api.StatusOK, devops.ResJenkinsfile{}).
-			Writes(devops.ResJenkinsfile{}))
-
-		// match /pipeline-model-converter/toJson
-		/*
-		 * Considering the following reasons, we use a generic data struct here.
-		 * - A fixed go struct might need to change again once Jenkins has new features.
-		 * - No refer requirement for the specific data struct
-		 * Please read the official document if you want to know more details
-		 * https://github.com/jenkinsci/pipeline-model-definition-plugin/blob/fc8d22192d7d3a17badc3b8af7191a84bb7fd4ca/EXTENDING.md#conversion-to-json-representation-from-jenkinsfile
-		 */
-		webservice.Route(webservice.POST("/tojson").
-			To(projectPipelineHandler.ToJSON).
-			Metadata(restfulspec.KeyOpenAPITags, []string{constants.DevOpsJenkinsfileTag}).
-			Consumes("application/x-www-form-urlencoded").
-			Produces("application/json", "charset=utf-8").
-			Doc("Convert jenkinsfile to json format. Usually the frontend uses json to show or edit pipeline").
-			Reads(devops.ReqJenkinsfile{}).
-			Returns(http.StatusOK, api.StatusOK, map[string]interface{}{}).
-			Writes(map[string]interface{}{}))
 	}
 	return nil
 }
@@ -723,6 +703,7 @@ func addJenkinsToContainer(webservice *restful.WebService, devopsClient devops.I
 		To(jenkinsProxy.proxyWithDevOps).
 		Returns(http.StatusOK, api.StatusOK, nil).
 		Metadata(restfulspec.KeyOpenAPITags, []string{constants.DevOpsJenkinsTag}))
+
 	return nil
 }
 

@@ -1,8 +1,28 @@
+/*
+Copyright 2022 The KubeSphere Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package jclient
 
 import (
+	"fmt"
+	"io"
 	"net/http"
+	"strconv"
 
+	"github.com/jenkins-zh/jenkins-client/pkg/artifact"
 	"kubesphere.io/devops/pkg/client/devops"
 )
 
@@ -44,6 +64,16 @@ func (j *JenkinsClient) RunPipeline(projectName, pipelineName string, httpParame
 // GetArtifacts returns the artifacts of a pipeline run
 func (j *JenkinsClient) GetArtifacts(projectName, pipelineName, runID string, httpParameters *devops.HttpParameters) ([]devops.Artifacts, error) {
 	return j.jenkins.GetArtifacts(projectName, pipelineName, runID, httpParameters)
+}
+
+// DownloadArtifact download an artifact
+func (j *JenkinsClient) DownloadArtifact(projectName, pipelineName, runID, filename string) (io.ReadCloser, error) {
+	jobRunID, err := strconv.Atoi(runID)
+	if err != nil {
+		return nil, fmt.Errorf("runId error, not a number: %v", err)
+	}
+	c := artifact.Client{JenkinsCore: j.Core}
+	return c.GetArtifact(projectName, pipelineName, jobRunID, filename)
 }
 
 // GetRunLog returns the log output of a pipeline run
@@ -194,14 +224,4 @@ func (j *JenkinsClient) CheckScriptCompile(projectName, pipelineName string, htt
 // CheckCron does the cron check
 func (j *JenkinsClient) CheckCron(projectName string, httpParameters *devops.HttpParameters) (*devops.CheckCronRes, error) {
 	return j.jenkins.CheckCron(projectName, httpParameters)
-}
-
-// ToJenkinsfile sends a request to turn to jenkinsfile
-func (j *JenkinsClient) ToJenkinsfile(httpParameters *devops.HttpParameters) (*devops.ResJenkinsfile, error) {
-	return j.jenkins.ToJenkinsfile(httpParameters)
-}
-
-// ToJSON sends a request to turn JSOn
-func (j *JenkinsClient) ToJSON(httpParameters *devops.HttpParameters) (map[string]interface{}, error) {
-	return j.jenkins.ToJSON(httpParameters)
 }

@@ -1,8 +1,27 @@
+/*
+Copyright 2022 The KubeSphere Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package options
 
 import (
 	"reflect"
 	"testing"
+
+	"github.com/spf13/pflag"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestFeatureOptions_GetControllers(t *testing.T) {
@@ -19,12 +38,11 @@ func TestFeatureOptions_GetControllers(t *testing.T) {
 			Controllers: map[string]bool{},
 		},
 		want: map[string]bool{
-			"s2ibinary":        true,
-			"s2irun":           true,
-			"pipeline":         true,
-			"devopsprojects":   true,
-			"devopscredential": true,
-			"jenkinsconfig":    true,
+			"jenkins":       true,
+			"jenkinsconfig": true,
+			"jenkinsagent":  true,
+			"gitrepository": true,
+			"pipeline":      true,
 		},
 	}, {
 		name: "no input (be nil) from users",
@@ -32,29 +50,26 @@ func TestFeatureOptions_GetControllers(t *testing.T) {
 			Controllers: nil,
 		},
 		want: map[string]bool{
-			"s2ibinary":        true,
-			"s2irun":           true,
-			"pipeline":         true,
-			"devopsprojects":   true,
-			"devopscredential": true,
-			"jenkinsconfig":    true,
+			"jenkins":       true,
+			"jenkinsconfig": true,
+			"jenkinsagent":  true,
+			"gitrepository": true,
+			"pipeline":      true,
 		},
 	}, {
 		name: "merge with the input from users",
 		fields: fields{
 			Controllers: map[string]bool{
-				"s2irun": false,
-				"fake":   true,
+				"fake": true,
 			},
 		},
 		want: map[string]bool{
-			"s2ibinary":        true,
-			"s2irun":           false,
-			"pipeline":         true,
-			"devopsprojects":   true,
-			"devopscredential": true,
-			"jenkinsconfig":    true,
-			"fake":             true,
+			"jenkins":       true,
+			"jenkinsconfig": true,
+			"jenkinsagent":  true,
+			"gitrepository": true,
+			"pipeline":      true,
+			"fake":          true,
 		},
 	}, {
 		name: "only enable the specific controllers",
@@ -78,4 +93,32 @@ func TestFeatureOptions_GetControllers(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFeatureOptions(t *testing.T) {
+	opt := NewFeatureOptions()
+	assert.NotNil(t, opt)
+	assert.Equal(t, []error{}, opt.Validate())
+
+	opt.Controllers = map[string]bool{
+		"fake": true,
+	}
+	assert.Equal(t, []string{"fake"}, opt.knownControllers())
+
+	opt.ExternalAddress = "fake-address"
+	assert.Equal(t, "fake-address", opt.ExternalAddress)
+
+	newOpt := NewFeatureOptions()
+	assert.Empty(t, newOpt.ExternalAddress)
+	opt.ApplyTo(newOpt)
+	assert.Equal(t, "fake-address", newOpt.ExternalAddress)
+
+	flagSet := &pflag.FlagSet{}
+	opt.AddFlags(flagSet, opt)
+	assert.True(t, flagSet.HasFlags())
+	assert.NotNil(t, flagSet.Lookup("enabled-controllers"))
+	assert.NotNil(t, flagSet.Lookup("system-namespace"))
+	assert.NotNil(t, flagSet.Lookup("external-address"))
+	assert.NotNil(t, flagSet.Lookup("cluster-name"))
+	assert.NotNil(t, flagSet.Lookup("pipelinerun-data-store"))
 }

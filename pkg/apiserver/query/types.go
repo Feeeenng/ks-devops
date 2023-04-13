@@ -39,6 +39,12 @@ const (
 	DefaultPage  = 1
 )
 
+var (
+	NameQueryParam          = restful.QueryParameter(ParameterName, "Filter by name, containing match pattern")
+	LabelSelectorQueryParam = restful.QueryParameter(ParameterLabelSelector, "Filter by labels")
+	FieldSelectorQueryParam = restful.QueryParameter(ParameterFieldSelector, "Filter by fields")
+)
+
 // Query represents api search terms
 type Query struct {
 	Pagination *Pagination

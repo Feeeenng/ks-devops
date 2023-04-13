@@ -1,8 +1,25 @@
+/*
+Copyright 2022 The KubeSphere Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package app
 
 import (
 	"context"
 	"fmt"
+	v1 "k8s.io/api/core/v1"
 	"math/rand"
 	"strings"
 	"time"
@@ -66,7 +83,7 @@ func (o *jwtOption) preRunE(cmd *cobra.Command, args []string) (err error) {
 
 	// get secret from ConfigMap if it's empty
 	if o.secret == "" {
-		if o.secret = o.getSecret(); o.secret == "" {
+		if o.secret, err = o.getSecret(); o.secret == "" {
 			// generate a new secret if the ConfigMap does not contain it, then update it into ConfigMap
 			o.updateSecret(o.generateSecret())
 		}
@@ -74,18 +91,19 @@ func (o *jwtOption) preRunE(cmd *cobra.Command, args []string) (err error) {
 	return
 }
 
-func (o *jwtOption) getSecret() string {
-	if cm, err := o.configMapUpdater.GetConfigMap(context.TODO(), o.namespace, o.name); err == nil {
+func (o *jwtOption) getSecret() (secret string, err error) {
+	var cm *v1.ConfigMap
+	if cm, err = o.configMapUpdater.GetConfigMap(context.TODO(), o.namespace, o.name); err == nil {
 		if data, ok := cm.Data[config.DefaultConfigurationFileName]; ok {
 			dataMap := make(map[string]map[string]string, 0)
-			if err := yaml.Unmarshal([]byte(data), dataMap); err == nil {
+			if err = yaml.Unmarshal([]byte(data), dataMap); err == nil {
 				if _, ok := dataMap["authentication"]; ok {
-					return dataMap["authentication"]["jwtSecret"]
+					secret = dataMap["authentication"]["jwtSecret"]
 				}
 			}
 		}
 	}
-	return ""
+	return
 }
 
 func (o *jwtOption) generateSecret() string {

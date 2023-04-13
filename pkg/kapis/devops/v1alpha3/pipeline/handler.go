@@ -1,3 +1,19 @@
+/*
+Copyright 2022 The KubeSphere Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package pipeline
 
 import (
@@ -5,9 +21,11 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"kubesphere.io/devops/pkg/kapis"
+
 	"github.com/emicklei/go-restful"
 	"github.com/jenkins-zh/jenkins-client/pkg/job"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"kubesphere.io/devops/pkg/api"
 	"kubesphere.io/devops/pkg/api/devops/v1alpha3"
 	"kubesphere.io/devops/pkg/apiserver/query"
@@ -37,12 +55,12 @@ func (h *apiHandler) getBranches(request *restful.Request, response *restful.Res
 	// get pipelinerun
 	pipeline := &v1alpha3.Pipeline{}
 	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: namespaceName, Name: pipelineName}, pipeline); err != nil {
-		api.HandleError(request, response, err)
+		kapis.HandleError(request, response, err)
 		return
 	}
 
 	if pipeline.Spec.Type != v1alpha3.MultiBranchPipelineType {
-		api.HandleBadRequest(response, request, fmt.Errorf("invalid multi-branch Pipeline provided"))
+		kapis.HandleBadRequest(response, request, fmt.Errorf("invalid multi-branch Pipeline provided"))
 		return
 	}
 
@@ -70,12 +88,12 @@ func (h *apiHandler) getBranch(request *restful.Request, response *restful.Respo
 	// get pipelinerun
 	pipeline := &v1alpha3.Pipeline{}
 	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: namespaceName, Name: pipelineName}, pipeline); err != nil {
-		api.HandleError(request, response, err)
+		kapis.HandleError(request, response, err)
 		return
 	}
 
 	if pipeline.Spec.Type != v1alpha3.MultiBranchPipelineType {
-		api.HandleBadRequest(response, request, fmt.Errorf("invalid multi-branch Pipeline provided"))
+		kapis.HandleBadRequest(response, request, fmt.Errorf("invalid multi-branch Pipeline provided"))
 		return
 	}
 
@@ -89,7 +107,7 @@ func (h *apiHandler) getBranch(request *restful.Request, response *restful.Respo
 	exist, searchedBranch := modelpipeline.BranchSlice(branches).SearchByName(branch)
 	if !exist {
 		// branch was not found
-		api.HandleNotFound(response, request, fmt.Errorf("Branch %s was not found", branch))
+		kapis.HandleNotFound(response, request, fmt.Errorf("Branch %s was not found", branch))
 		return
 	}
 	_ = response.WriteEntity(searchedBranch)

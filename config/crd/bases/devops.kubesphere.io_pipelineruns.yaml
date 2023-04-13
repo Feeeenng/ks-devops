@@ -21,6 +21,10 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
+    - description: The id of a PipelineRun
+      jsonPath: .metadata.annotations.devops\.kubesphere\.io/jenkins-pipelinerun-id
+      name: ID
+      type: string
     - description: The phase of a PipelineRun
       jsonPath: .status.phase
       name: Phase
@@ -114,6 +118,8 @@ spec:
                     properties:
                       bitbucket_server_source:
                         properties:
+                          accept_jenkins_notification:
+                            type: boolean
                           api_uri:
                             type: string
                           credential_id:
@@ -186,6 +192,8 @@ spec:
                         description: GithubSource and BitbucketServerSource have the
                           same structure, but we don't use one due to crd errors
                         properties:
+                          accept_jenkins_notification:
+                            type: boolean
                           api_uri:
                             type: string
                           credential_id:
@@ -223,6 +231,8 @@ spec:
                         type: object
                       gitlab_source:
                         properties:
+                          accept_jenkins_notification:
+                            type: boolean
                           api_uri:
                             type: string
                           credential_id:
@@ -395,9 +405,8 @@ spec:
                     - name
                     type: object
                   type:
-                    description: 'INSERT ADDITIONAL SPEC FIELDS - desired state of
-                      cluster Important: Run "make" to regenerate code after modifying
-                      this file'
+                    description: PipelineType is an alias of string that represents
+                      the type of Pipelines
                     type: string
                 required:
                 - type

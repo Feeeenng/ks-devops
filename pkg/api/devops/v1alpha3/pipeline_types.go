@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha3
 
 import (
+	"fmt"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -27,26 +28,40 @@ const PipelineFinalizerName = "pipeline.finalizers.kubesphere.io"
 
 const (
 	ResourceKindPipeline      = "Pipeline"
-	ResourceSingularPipeline  = "pipeline"
 	ResourcePluralPipeline    = "pipelines"
 	PipelinePrefix            = "pipeline.devops.kubesphere.io/"
 	PipelineSpecHash          = PipelinePrefix + "spechash"
 	PipelineSyncStatusAnnoKey = PipelinePrefix + "syncstatus"
 	PipelineSyncTimeAnnoKey   = PipelinePrefix + "synctime"
 	PipelineSyncMsgAnnoKey    = PipelinePrefix + "syncmsg"
+	PipelineLastChanges       = PipelinePrefix + "last-changes"
 	// PipelineJenkinsMetadataAnnoKey is the annotation key of Jenkins Pipeline data.
 	PipelineJenkinsMetadataAnnoKey = PipelinePrefix + "jenkins-metadata"
 	// PipelineJenkinsBranchesAnnoKey is the annotation key of Jenkins Pipeline branches.
 	PipelineJenkinsBranchesAnnoKey = PipelinePrefix + "jenkins-branches"
 	// PipelineRequestToSyncRunsAnnoKey is the annotation key of requesting to synchronize PipelineRun after a dedicated time.
 	PipelineRequestToSyncRunsAnnoKey = PipelinePrefix + "request-to-sync-pipelineruns"
+	// PipelineJenkinsfileValueAnnoKey is the annotation key of the Jenkinsfile content
+	PipelineJenkinsfileValueAnnoKey = PipelinePrefix + "jenkinsfile"
+	// PipelineJenkinsfileEditModeAnnoKey is the annotation key of the Jenkinsfile edit mode
+	PipelineJenkinsfileEditModeAnnoKey = PipelinePrefix + "jenkinsfile.edit.mode"
+	// PipelineJenkinsfileValidateAnnoKey is the annotation key of the Jenkinsfile validate, success or failure
+	PipelineJenkinsfileValidateAnnoKey = PipelinePrefix + "jenkinsfile.validate"
+
+	// PipelineJenkinsfileEditModeJSON indicates the Jenkinsfile editing mode is JSON
+	PipelineJenkinsfileEditModeJSON = "json"
+	// PipelineJenkinsfileEditModeRaw indicates the Jenkinsfile editing mode is groovy
+	PipelineJenkinsfileEditModeRaw = "raw"
+
+	// PipelineJenkinsfileValidateSuccess indicates the Jenkinsfile validate is success
+	PipelineJenkinsfileValidateSuccess = "success"
+	// PipelineJenkinsfileValidateFailure indicates the Jenkinsfile validate is failure
+	PipelineJenkinsfileValidateFailure = "failure"
 )
 
 // PipelineSpec defines the desired state of Pipeline
 type PipelineSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	Type                string               `json:"type" description:"type of devops pipeline, in scm or no scm"`
+	Type                PipelineType         `json:"type" description:"type of devops pipeline, in scm or no scm"`
 	Pipeline            *NoScmPipeline       `json:"pipeline,omitempty" description:"no scm pipeline structs"`
 	MultiBranchPipeline *MultiBranchPipeline `json:"multi_branch_pipeline,omitempty" description:"in scm pipeline structs"`
 }
@@ -90,9 +105,12 @@ func (p *Pipeline) IsMultiBranch() bool {
 	return p.Spec.Type == MultiBranchPipelineType
 }
 
+// PipelineType is an alias of string that represents the type of Pipelines
+type PipelineType string
+
 const (
-	NoScmPipelineType       = "pipeline"
-	MultiBranchPipelineType = "multi-branch-pipeline"
+	NoScmPipelineType       PipelineType = "pipeline"
+	MultiBranchPipelineType PipelineType = "multi-branch-pipeline"
 )
 
 const (
@@ -132,6 +150,28 @@ type MultiBranchPipeline struct {
 	MultiBranchJobTrigger *MultiBranchJobTrigger `json:"multibranch_job_trigger,omitempty" mapstructure:"multibranch_job_trigger" description:"Pipeline tasks that need to be triggered when branch creation/deletion"`
 }
 
+func (b *MultiBranchPipeline) GetGitURL() string {
+	switch b.SourceType {
+	case SourceTypeGit:
+		if b.GitSource != nil {
+			return b.GitSource.Url
+		}
+	case SourceTypeGithub:
+		if b.GitHubSource != nil {
+			return fmt.Sprintf("https://github.com/%s/%s", b.GitHubSource.Owner, b.GitHubSource.Repo)
+		}
+	case SourceTypeGitlab:
+		if b.GitlabSource != nil {
+			return fmt.Sprintf("https://gitlab.com/%s/%s", b.GitlabSource.Owner, b.GitlabSource.Repo)
+		}
+	case SourceTypeBitbucket:
+		if b.BitbucketServerSource != nil {
+			return fmt.Sprintf("https://bitbucket.org/%s/%s", b.BitbucketServerSource.Owner, b.BitbucketServerSource.Repo)
+		}
+	}
+	return ""
+}
+
 type GitSource struct {
 	ScmId            string          `json:"scm_id,omitempty" description:"uid of scm"`
 	Url              string          `json:"url,omitempty" mapstructure:"url" description:"url of git source"`
@@ -144,46 +184,49 @@ type GitSource struct {
 
 // GithubSource and BitbucketServerSource have the same structure, but we don't use one due to crd errors
 type GithubSource struct {
-	ScmId                string               `json:"scm_id,omitempty" description:"uid of scm"`
-	Owner                string               `json:"owner,omitempty" mapstructure:"owner" description:"owner of github repo"`
-	Repo                 string               `json:"repo,omitempty" mapstructure:"repo" description:"repo name of github repo"`
-	CredentialId         string               `json:"credential_id,omitempty" mapstructure:"credential_id" description:"credential id to access github source"`
-	ApiUri               string               `json:"api_uri,omitempty" mapstructure:"api_uri" description:"The api url can specify the location of the github apiserver.For private cloud configuration"`
-	DiscoverBranches     int                  `json:"discover_branches,omitempty" mapstructure:"discover_branches" description:"Discover branch configuration"`
-	DiscoverPRFromOrigin int                  `json:"discover_pr_from_origin,omitempty" mapstructure:"discover_pr_from_origin" description:"Discover origin PR configuration"`
-	DiscoverPRFromForks  *DiscoverPRFromForks `json:"discover_pr_from_forks,omitempty" mapstructure:"discover_pr_from_forks" description:"Discover fork PR configuration"`
-	DiscoverTags         bool                 `json:"discover_tags,omitempty" mapstructure:"discover_tags" description:"Discover tag configuration"`
-	CloneOption          *GitCloneOption      `json:"git_clone_option,omitempty" mapstructure:"git_clone_option" description:"advavced git clone options"`
-	RegexFilter          string               `json:"regex_filter,omitempty" mapstructure:"regex_filter" description:"Regex used to match the name of the branch that needs to be run"`
+	ScmId                     string               `json:"scm_id,omitempty" description:"uid of scm"`
+	Owner                     string               `json:"owner,omitempty" mapstructure:"owner" description:"owner of github repo"`
+	Repo                      string               `json:"repo,omitempty" mapstructure:"repo" description:"repo name of github repo"`
+	CredentialId              string               `json:"credential_id,omitempty" mapstructure:"credential_id" description:"credential id to access github source"`
+	ApiUri                    string               `json:"api_uri,omitempty" mapstructure:"api_uri" description:"The api url can specify the location of the github apiserver.For private cloud configuration"`
+	DiscoverBranches          int                  `json:"discover_branches,omitempty" mapstructure:"discover_branches" description:"Discover branch configuration"`
+	DiscoverPRFromOrigin      int                  `json:"discover_pr_from_origin,omitempty" mapstructure:"discover_pr_from_origin" description:"Discover origin PR configuration"`
+	DiscoverPRFromForks       *DiscoverPRFromForks `json:"discover_pr_from_forks,omitempty" mapstructure:"discover_pr_from_forks" description:"Discover fork PR configuration"`
+	DiscoverTags              bool                 `json:"discover_tags,omitempty" mapstructure:"discover_tags" description:"Discover tag configuration"`
+	CloneOption               *GitCloneOption      `json:"git_clone_option,omitempty" mapstructure:"git_clone_option" description:"advavced git clone options"`
+	RegexFilter               string               `json:"regex_filter,omitempty" mapstructure:"regex_filter" description:"Regex used to match the name of the branch that needs to be run"`
+	AcceptJenkinsNotification bool                 `json:"accept_jenkins_notification,omitempty"  mapstructure:"accept_jenkins_notification" description:"Allow Jenkins send build status notification to Github"`
 }
 
 type GitlabSource struct {
-	ScmId                string               `json:"scm_id,omitempty" description:"uid of scm"`
-	Owner                string               `json:"owner,omitempty" mapstructure:"owner" description:"owner of gitlab repo"`
-	Repo                 string               `json:"repo,omitempty" mapstructure:"repo" description:"repo name of gitlab repo"`
-	ServerName           string               `json:"server_name,omitempty" description:"the name of gitlab server which was configured in jenkins"`
-	CredentialId         string               `json:"credential_id,omitempty" mapstructure:"credential_id" description:"credential id to access gitlab source"`
-	ApiUri               string               `json:"api_uri,omitempty" mapstructure:"api_uri" description:"The api url can specify the location of the gitlab apiserver.For private cloud configuration"`
-	DiscoverBranches     int                  `json:"discover_branches,omitempty" mapstructure:"discover_branches" description:"Discover branch configuration"`
-	DiscoverPRFromOrigin int                  `json:"discover_pr_from_origin,omitempty" mapstructure:"discover_pr_from_origin" description:"Discover origin PR configuration"`
-	DiscoverPRFromForks  *DiscoverPRFromForks `json:"discover_pr_from_forks,omitempty" mapstructure:"discover_pr_from_forks" description:"Discover fork PR configuration"`
-	DiscoverTags         bool                 `json:"discover_tags,omitempty" mapstructure:"discover_tags" description:"Discover tags configuration"`
-	CloneOption          *GitCloneOption      `json:"git_clone_option,omitempty" mapstructure:"git_clone_option" description:"advavced git clone options"`
-	RegexFilter          string               `json:"regex_filter,omitempty" mapstructure:"regex_filter" description:"Regex used to match the name of the branch that needs to be run"`
+	ScmId                     string               `json:"scm_id,omitempty" description:"uid of scm"`
+	Owner                     string               `json:"owner,omitempty" mapstructure:"owner" description:"owner of gitlab repo"`
+	Repo                      string               `json:"repo,omitempty" mapstructure:"repo" description:"repo name of gitlab repo"`
+	ServerName                string               `json:"server_name,omitempty" description:"the name of gitlab server which was configured in jenkins"`
+	CredentialId              string               `json:"credential_id,omitempty" mapstructure:"credential_id" description:"credential id to access gitlab source"`
+	ApiUri                    string               `json:"api_uri,omitempty" mapstructure:"api_uri" description:"The api url can specify the location of the gitlab apiserver.For private cloud configuration"`
+	DiscoverBranches          int                  `json:"discover_branches,omitempty" mapstructure:"discover_branches" description:"Discover branch configuration"`
+	DiscoverPRFromOrigin      int                  `json:"discover_pr_from_origin,omitempty" mapstructure:"discover_pr_from_origin" description:"Discover origin PR configuration"`
+	DiscoverPRFromForks       *DiscoverPRFromForks `json:"discover_pr_from_forks,omitempty" mapstructure:"discover_pr_from_forks" description:"Discover fork PR configuration"`
+	DiscoverTags              bool                 `json:"discover_tags,omitempty" mapstructure:"discover_tags" description:"Discover tags configuration"`
+	CloneOption               *GitCloneOption      `json:"git_clone_option,omitempty" mapstructure:"git_clone_option" description:"advavced git clone options"`
+	RegexFilter               string               `json:"regex_filter,omitempty" mapstructure:"regex_filter" description:"Regex used to match the name of the branch that needs to be run"`
+	AcceptJenkinsNotification bool                 `json:"accept_jenkins_notification,omitempty"  mapstructure:"accept_jenkins_notification" description:"Allow Jenkins send build status notification to Gitlab"`
 }
 
 type BitbucketServerSource struct {
-	ScmId                string               `json:"scm_id,omitempty" description:"uid of scm"`
-	Owner                string               `json:"owner,omitempty" mapstructure:"owner" description:"owner of github repo"`
-	Repo                 string               `json:"repo,omitempty" mapstructure:"repo" description:"repo name of github repo"`
-	CredentialId         string               `json:"credential_id,omitempty" mapstructure:"credential_id" description:"credential id to access github source"`
-	ApiUri               string               `json:"api_uri,omitempty" mapstructure:"api_uri" description:"The api url can specify the location of the github apiserver.For private cloud configuration"`
-	DiscoverBranches     int                  `json:"discover_branches,omitempty" mapstructure:"discover_branches" description:"Discover branch configuration"`
-	DiscoverPRFromOrigin int                  `json:"discover_pr_from_origin,omitempty" mapstructure:"discover_pr_from_origin" description:"Discover origin PR configuration"`
-	DiscoverPRFromForks  *DiscoverPRFromForks `json:"discover_pr_from_forks,omitempty" mapstructure:"discover_pr_from_forks" description:"Discover fork PR configuration"`
-	DiscoverTags         bool                 `json:"discover_tags,omitempty" mapstructure:"discover_tags" description:"Discover tag configuration"`
-	CloneOption          *GitCloneOption      `json:"git_clone_option,omitempty" mapstructure:"git_clone_option" description:"advavced git clone options"`
-	RegexFilter          string               `json:"regex_filter,omitempty" mapstructure:"regex_filter" description:"Regex used to match the name of the branch that needs to be run"`
+	ScmId                     string               `json:"scm_id,omitempty" description:"uid of scm"`
+	Owner                     string               `json:"owner,omitempty" mapstructure:"owner" description:"owner of github repo"`
+	Repo                      string               `json:"repo,omitempty" mapstructure:"repo" description:"repo name of github repo"`
+	CredentialId              string               `json:"credential_id,omitempty" mapstructure:"credential_id" description:"credential id to access github source"`
+	ApiUri                    string               `json:"api_uri,omitempty" mapstructure:"api_uri" description:"The api url can specify the location of the github apiserver.For private cloud configuration"`
+	DiscoverBranches          int                  `json:"discover_branches,omitempty" mapstructure:"discover_branches" description:"Discover branch configuration"`
+	DiscoverPRFromOrigin      int                  `json:"discover_pr_from_origin,omitempty" mapstructure:"discover_pr_from_origin" description:"Discover origin PR configuration"`
+	DiscoverPRFromForks       *DiscoverPRFromForks `json:"discover_pr_from_forks,omitempty" mapstructure:"discover_pr_from_forks" description:"Discover fork PR configuration"`
+	DiscoverTags              bool                 `json:"discover_tags,omitempty" mapstructure:"discover_tags" description:"Discover tag configuration"`
+	CloneOption               *GitCloneOption      `json:"git_clone_option,omitempty" mapstructure:"git_clone_option" description:"advavced git clone options"`
+	RegexFilter               string               `json:"regex_filter,omitempty" mapstructure:"regex_filter" description:"Regex used to match the name of the branch that needs to be run"`
+	AcceptJenkinsNotification bool                 `json:"accept_jenkins_notification,omitempty"  mapstructure:"accept_jenkins_notification" description:"Allow Jenkins send build status notification to Bitbucket"`
 }
 
 type MultiBranchJobTrigger struct {
@@ -222,7 +265,7 @@ type DiscarderProperty struct {
 
 type ParameterDefinition struct {
 	Name         string `json:"name" description:"name of param"`
-	DefaultValue string `json:"default_value,omitempty" mapstructure:"default_value" description:"default value of param"`
+	DefaultValue string `json:"default_value,omitempty" yaml:"default_value" mapstructure:"default_value" description:"default value of param"`
 	Type         string `json:"type" description:"type of param"`
 	Description  string `json:"description,omitempty" description:"description of pipeline"`
 }
